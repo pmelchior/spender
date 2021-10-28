@@ -256,22 +256,27 @@ class ZLatentBase(nn.Module):
         wave_redshifted = (self.wave_rest.unsqueeze(1) * (1 + z)).T
         return Interp1d()(wave_redshifted, spectrum_restframe, self.wave_obs)
 
-    def loss(self, x, w, z0=0):
+    def loss(self, x, w, z0=0, individual=False):
         spectrum_observed = self.forward(x, z0=z0)
-        l = self._loss(x, w, spectrum_observed)
-        return l
+        return self._loss(x, w, spectrum_observed, individual=individual)
                 
-    def _l2_loss(self, x, w, spectrum_observed):      
+    def _l2_loss(self, x, w, spectrum_observed, individual=False):
         # proper neg log likelihood, w = inverse variance
         mask = w > 0
         D = (mask).sum(dim=1)
         lognorm =  D / 2 * np.log(2 * np.pi)
         tiny = 1e-10
         lognorm -= torch.sum(torch.log(w + tiny), dim=1)
+        if individual:
+            return torch.sum(0.5 * w * (x - spectrum_observed).pow(2), dim=1) + lognorm
         return torch.sum(0.5 * w * (x - spectrum_observed).pow(2)) + lognorm.sum()
         
-    def _emd_loss(self, x, w, spectrum_observed):
-        return torch.cumsum(x - spectrum_observed, dim=-1).abs().sum()
+    def _emd_loss(self, x, w, spectrum_observed, individual=False):
+        if individual:
+            dim=1
+        else:
+            dim=None
+        return torch.cumsum(x - spectrum_observed, dim=-1).abs().sum(dim=dim)
 
     @property
     def n_parameters(self):
