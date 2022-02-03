@@ -44,11 +44,11 @@ wave_rest = torch.linspace(lmbda_min, lmbda_max, bins, dtype=torch.float32)
 print ("Observed frame:\t{:.0f} .. {:.0f} A ({} bins)".format(wave_obs.min(), wave_obs.max(), len(wave_obs)))
 print ("Restframe:\t{:.0f} .. {:.0f} A ({} bins)".format(lmbda_min, lmbda_max, bins))
 
-def train(model, trainloader, validloader, n_epoch=200, label="", silent=False, lr=3e-4):
-    accelerator = Accelerator()
+def train(model, accelerator, wave_obs, trainloader, validloader, n_epoch=200, label="", silent=False, lr=3e-4):
+    
     optimizer = optim.Adam(model.parameters(), lr=lr)
     scheduler = optim.lr_scheduler.OneCycleLR(optimizer, lr, total_steps=n_epoch)
-    model, optimizer, trainloader, validloader = accelerator.prepare(model, optimizer, trainloader, validloader)
+    model, optimizer = accelerator.prepare(model, optimizer)
     
     losses = []
     for epoch in range(n_epoch):
@@ -57,7 +57,7 @@ def train(model, trainloader, validloader, n_epoch=200, label="", silent=False, 
         for batch in trainloader:
             spec, w, z = batch
             optimizer.zero_grad()
-            loss = model.loss(spec, w, z0=z)
+            loss = model.loss(spec, wave_obs, w, z0=z)
             accelerator.backward(loss)
             train_loss += loss.item() 
             optimizer.step()        
@@ -68,7 +68,7 @@ def train(model, trainloader, validloader, n_epoch=200, label="", silent=False, 
             valid_loss = 0.
             for batch in validloader:
                 spec, w, z = batch
-                loss = model.loss(spec, w, z0=z)
+                loss = model.loss(spec, wave_obs, w, z0=z)
                 valid_loss += loss.item()
             valid_loss /= len(validloader.dataset)
 
@@ -86,17 +86,20 @@ def train(model, trainloader, validloader, n_epoch=200, label="", silent=False, 
 
 n_latent = 10
 n_model = 5
-label = "model.series.z-forward.10.sdss.38816"
-n_epoch = 300
+label = "model.series.test"
+n_epoch = 100
+
+accelerator = Accelerator()
+trainloader, validloader = accelerator.prepare(trainloader, validloader)
+wave_obs = wave_obs.to(accelerator.device)
 
 for i in range(n_model):
     n_hidden = (1024, 256, 64)
     model = SeriesAutoencoder(
-            wave_obs,
             wave_rest,
             n_latent=n_latent,
             n_hidden_dec=n_hidden,
     )
     print (f"--- Model {i}/{n_model}")
     print (f"Parameters:", model.n_parameters)
-    train(model, trainloader, validloader, n_epoch=n_epoch, label=label+f".{i}", lr=1e-3)
+    train(model, accelerator, wave_obs, trainloader, validloader, n_epoch=n_epoch, label=label+f".{i}", lr=1e-3)

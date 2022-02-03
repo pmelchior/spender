@@ -216,25 +216,15 @@ class ZLatentBase(nn.Module):
     def __init__(self,
                  encoder,
                  decoder,
-                 wave_obs, 
                  wave_rest,
-                 loss='l2',
                 ):
-        
         
         super(ZLatentBase, self).__init__()
         self.encoder = encoder
         self.decoder = decoder
         
-        # register wavelength tensors on the same dives as the entire model
-        self.register_buffer('wave_obs', wave_obs)
+        # register wavelength tensors on the same device as the entire model
         self.register_buffer('wave_rest', wave_rest)
-        
-        assert loss in ['l2', 'emd']
-        if loss == 'emd':
-            self._loss = self._emd_loss
-        else:
-            self._loss = self._l2_loss        
         
     def encode(self, x):
         return self.encoder(x)
@@ -242,25 +232,25 @@ class ZLatentBase(nn.Module):
     def decode(self, x):
         return self.decoder(x)
     
-    def _forward(self, x, z0=0):
+    def _forward(self, x, wave, z0=0):
         s = self.encode(x)
         spectrum_restframe = self.decode(s)
-        spectrum_observed = self.transform(spectrum_restframe, z0)
+        spectrum_observed = self.transform(spectrum_restframe, wave, z0)
         return s, spectrum_restframe, spectrum_observed
 
-    def forward(self, x, z0=0):
-        s, spectrum_restframe, spectrum_observed = self._forward(x, z0=z0)
+    def forward(self, x, wave, z0=0):
+        s, spectrum_restframe, spectrum_observed = self._forward(x, wave, z0=z0)
         return spectrum_observed
         
-    def transform(self, spectrum_restframe, z):
+    def transform(self, spectrum_restframe, wave, z):
         wave_redshifted = (self.wave_rest.unsqueeze(1) * (1 + z)).T
-        return Interp1d()(wave_redshifted, spectrum_restframe, self.wave_obs)
+        return Interp1d()(wave_redshifted, spectrum_restframe, wave)
 
-    def loss(self, x, w, z0=0, individual=False):
-        spectrum_observed = self.forward(x, z0=z0)
+    def loss(self, x, wave, w, z0=0, individual=False):
+        spectrum_observed = self.forward(x, wave, z0=z0)
         return self._loss(x, w, spectrum_observed, individual=individual)
                 
-    def _l2_loss(self, x, w, spectrum_observed, individual=False):
+    def _loss(self, x, w, spectrum_observed, individual=False):
         # proper neg log likelihood, w = inverse variance
         mask = w > 0
         D = (mask).sum(dim=1)
@@ -270,14 +260,7 @@ class ZLatentBase(nn.Module):
         if individual:
             return torch.sum(0.5 * w * (x - spectrum_observed).pow(2), dim=1) + lognorm
         return torch.sum(0.5 * w * (x - spectrum_observed).pow(2)) + lognorm.sum()
-        
-    def _emd_loss(self, x, w, spectrum_observed, individual=False):
-        if individual:
-            dim=1
-        else:
-            dim=None
-        return torch.cumsum(x - spectrum_observed, dim=-1).abs().sum(dim=dim)
-
+    
     @property
     def n_parameters(self):
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
@@ -292,7 +275,6 @@ class ZLatentAutoEncoder(ZLatentBase):
                  n_hidden_enc=[128, 64, 32],
                  n_hidden_dec=[128, 64, 32],   
                  dropout=0,
-                 loss='l2',
         ):
         
         encoder = Encoder(
@@ -313,7 +295,6 @@ class ZLatentAutoEncoder(ZLatentBase):
             decoder,
             wave_obs,
             wave_rest,
-            loss=loss,
         )
 
 #### Series encoder ####
@@ -361,12 +342,10 @@ class SeriesEncoder(nn.Module):
 
 class SeriesAutoencoder(ZLatentBase):
     def __init__(self,
-                 wave_obs, 
                  wave_rest,
                  n_latent=5, 
                  n_hidden_dec=[128, 64, 32],  
                  dropout=0,
-                 loss='l2',
                 ):
         
         encoder = SeriesEncoder(n_latent, dropout=dropout)
@@ -378,11 +357,8 @@ class SeriesAutoencoder(ZLatentBase):
             dropout=dropout,
         )
         
-
         super(SeriesAutoencoder, self).__init__(
             encoder,
             decoder,
-            wave_obs,
             wave_rest,
-            loss=loss,
         )
