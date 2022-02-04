@@ -216,25 +216,15 @@ class ZLatentBase(nn.Module):
     def __init__(self,
                  encoder,
                  decoder,
-                 wave_obs, 
                  wave_rest,
-                 loss='l2',
                 ):
-        
         
         super(ZLatentBase, self).__init__()
         self.encoder = encoder
         self.decoder = decoder
         
         # register wavelength tensors on the same dives as the entire model
-        self.register_buffer('wave_obs', wave_obs)
-        self.register_buffer('wave_rest', wave_rest)
-        
-        assert loss in ['l2', 'emd']
-        if loss == 'emd':
-            self._loss = self._emd_loss
-        else:
-            self._loss = self._l2_loss        
+        self.register_buffer('wave_rest', wave_rest)       
         
     def encode(self, x):
         return self.encoder(x)
@@ -242,41 +232,101 @@ class ZLatentBase(nn.Module):
     def decode(self, x):
         return self.decoder(x)
     
-    def _forward(self, x, z0=0):
+    def _forward(self, x, wave, z0=0):
         s = self.encode(x)
         spectrum_restframe = self.decode(s)
-        spectrum_observed = self.transform(spectrum_restframe, z0)
+        spectrum_observed = self.transform(spectrum_restframe, wave, z0)
         return s, spectrum_restframe, spectrum_observed
 
-    def forward(self, x, z0=0):
-        s, spectrum_restframe, spectrum_observed = self._forward(x, z0=z0)
+    
+    def _forward_resample(self, x, z0=0):
+        s = self.encode(x)
+        spectrum_restframe = self.decode(s)
+        spectrum_observed = self.resample(spectrum_restframe, z0)
+        return s, spectrum_restframe, spectrum_observed
+    
+    
+    
+    def forward(self, x, wave, z0=0):
+        s, spectrum_restframe, spectrum_observed = self._forward(x, wave, z0=z0)
         return spectrum_observed
         
-    def transform(self, spectrum_restframe, z):
+    def transform(self, spectrum_restframe, wave, z):
         wave_redshifted = (self.wave_rest.unsqueeze(1) * (1 + z)).T
-        return Interp1d()(wave_redshifted, spectrum_restframe, self.wave_obs)
+        return Interp1d()(wave_redshifted, spectrum_restframe, wave)
+    
+    
+    def convert_matrix(self, z, wave_model,spect_model,wave_redshifted):
 
-    def loss(self, x, w, z0=0, individual=False):
-        spectrum_observed = self.forward(x, z0=z0)
+        x = wave_model.cpu().detach().numpy()
+        X = wave_redshifted.cpu().detach().numpy()
+        
+        y_array = spect_model.cpu().detach().numpy()
+        z_array = z.cpu().detach().numpy()
+        print("wave_model:",x.shape,"wave_redshifted",X.shape,
+              "\n\ny:",y_array.shape,"z:",z_array.shape)
+        # PSF properties
+
+        h = 1.16
+        #H = 1.4 # wave_obs
+
+        nspec = len(z_array)
+        nX = len(X)
+
+        Hv = np.ediff1d(X, to_end=2.131836)
+        print("Hv:",Hv)
+        
+        spectrum_redshifted = np.zeros((nspec,nX))
+        for ii in range(nspec):
+
+            Z = z_array[ii]
+            print("Z:",Z)
+            
+            SI_m = sici(np.pi/h*(Hv[:,None]/2 + X[:,None]/(1+Z) - 
+                                 x[None,:]))[0]
+            SI_p = sici(np.pi/h*(Hv[:,None]/2 - X[:,None]/(1+Z) + 
+                                 x[None,:]))[0]
+            
+            print("SI_m:",SI_m.shape)
+            
+            A_matrix = (SI_m+SI_p) * h / np.pi
+
+            print("A_matrix:",A_matrix.shape)
+            #exit()
+            
+            spectrum_redshifted[ii] = A_matrix /Hv[:,None] @ y_array[ii]   
+            
+        return spectrum_redshifted
+
+
+    def resample(self, spectrum_restframe, z):
+        wave_model = self.wave_rest
+        wave_redshifted = self.wave_obs
+        
+        spectrum_redshifted = self.convert_matrix(z, wave_model, 
+                                                  spectrum_restframe,
+                                                  wave_redshifted)
+
+        return spectrum_redshifted
+
+    def loss(self, x, wave, w, z0=0, individual=False):
+        spectrum_observed = self.forward(x, wave, z0=z0)
         return self._loss(x, w, spectrum_observed, individual=individual)
                 
-    def _l2_loss(self, x, w, spectrum_observed, individual=False):
+    def _loss(self, x, w, spectrum_observed, individual=False):
         # proper neg log likelihood, w = inverse variance
-        mask = w > 0
+        mask = w > 1e-6
         D = (mask).sum(dim=1)
         lognorm =  D / 2 * np.log(2 * np.pi)
         tiny = 1e-10
-        lognorm -= torch.sum(torch.log(w + tiny), dim=1)
+        #lognorm -= torch.sum(torch.log(w + tiny), dim=1)
         if individual:
-            return torch.sum(0.5 * w * (x - spectrum_observed).pow(2), dim=1) + lognorm
-        return torch.sum(0.5 * w * (x - spectrum_observed).pow(2)) + lognorm.sum()
+            return torch.sum(0.5 * w * (x - spectrum_observed).pow(2), dim=1), D
         
-    def _emd_loss(self, x, w, spectrum_observed, individual=False):
-        if individual:
-            dim=1
-        else:
-            dim=None
-        return torch.cumsum(x - spectrum_observed, dim=-1).abs().sum(dim=dim)
+        loss_ind = torch.sum(0.5 * w * (x - spectrum_observed).pow(2), dim=1)
+        loss_total = torch.sum(loss_ind/D)*1e3
+        
+        return loss_total
 
     @property
     def n_parameters(self):
@@ -292,7 +342,6 @@ class ZLatentAutoEncoder(ZLatentBase):
                  n_hidden_enc=[128, 64, 32],
                  n_hidden_dec=[128, 64, 32],   
                  dropout=0,
-                 loss='l2',
         ):
         
         encoder = Encoder(
@@ -313,7 +362,6 @@ class ZLatentAutoEncoder(ZLatentBase):
             decoder,
             wave_obs,
             wave_rest,
-            loss=loss,
         )
 
 #### Series encoder ####
@@ -382,7 +430,5 @@ class SeriesAutoencoder(ZLatentBase):
         super(SeriesAutoencoder, self).__init__(
             encoder,
             decoder,
-            wave_obs,
             wave_rest,
-            loss=loss,
         )

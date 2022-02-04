@@ -15,13 +15,16 @@ from torch.distributions.normal import Normal
 from model import *
 from accelerate import Accelerator
 
+data_dir = "/scratch/gpfs/yanliang"
+dataname = "cutted-sdss_spectra"
+data_file = "%s/%s.npz"%(data_dir,dataname)
 
 # load data, specify GPU to prevent copying later
 # TODO: use torch.cuda.amp.autocast() for FP16/BF16 typcast
 # TODO: need dynamic data loader if we use larger data sets
 device = torch.device(type='cuda', index=0)
-data = load_data('/scratch/network/melchoir/sdss_spectra.38816.npz', which="train", device=device)
-valid_data = load_data('/scratch/network/melchoir/sdss_spectra.38816.npz', which="valid", device=device)
+data = load_data(data_file, which="train", device=device)
+valid_data = load_data(data_file, which="valid", device=device)
 
 batch_size=2048
 trainloader = torch.utils.data.DataLoader(
@@ -86,7 +89,8 @@ def train(model, trainloader, validloader, n_epoch=200, label="", silent=False, 
 
 n_latent = 10
 n_model = 5
-label = "model.series.z-forward.10.sdss.38816"
+#label = "model.series.z-forward.10.sdss.38816"
+label = "%s/%s"%(savemodel,dataname)
 n_epoch = 300
 
 for i in range(n_model):
