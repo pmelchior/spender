@@ -223,8 +223,9 @@ class ZLatentBase(nn.Module):
         self.encoder = encoder
         self.decoder = decoder
         
-        # register wavelength tensors on the same dives as the entire model
-        self.register_buffer('wave_rest', wave_rest)       
+        # register wavelength tensors on the same device as the entire model
+        self.register_buffer('wave_rest', wave_rest)
+
         
     def encode(self, x):
         return self.encoder(x)
@@ -237,7 +238,6 @@ class ZLatentBase(nn.Module):
         spectrum_restframe = self.decode(s)
         spectrum_observed = self.transform(spectrum_restframe, wave, z0)
         return s, spectrum_restframe, spectrum_observed
-
     
     def _forward_resample(self, x, z0=0):
         s = self.encode(x)
@@ -245,8 +245,7 @@ class ZLatentBase(nn.Module):
         spectrum_observed = self.resample(spectrum_restframe, z0)
         return s, spectrum_restframe, spectrum_observed
     
-    
-    
+
     def forward(self, x, wave, z0=0):
         s, spectrum_restframe, spectrum_observed = self._forward(x, wave, z0=z0)
         return spectrum_observed
@@ -254,6 +253,7 @@ class ZLatentBase(nn.Module):
     def transform(self, spectrum_restframe, wave, z):
         wave_redshifted = (self.wave_rest.unsqueeze(1) * (1 + z)).T
         return Interp1d()(wave_redshifted, spectrum_restframe, wave)
+    
     
     
     def convert_matrix(self, z, wave_model,spect_model,wave_redshifted):
@@ -309,6 +309,7 @@ class ZLatentBase(nn.Module):
 
         return spectrum_redshifted
 
+
     def loss(self, x, wave, w, z0=0, individual=False):
         spectrum_observed = self.forward(x, wave, z0=z0)
         return self._loss(x, w, spectrum_observed, individual=individual)
@@ -321,12 +322,14 @@ class ZLatentBase(nn.Module):
         tiny = 1e-10
         #lognorm -= torch.sum(torch.log(w + tiny), dim=1)
         if individual:
+
             return torch.sum(0.5 * w * (x - spectrum_observed).pow(2), dim=1), D
         
         loss_ind = torch.sum(0.5 * w * (x - spectrum_observed).pow(2), dim=1)
         loss_total = torch.sum(loss_ind/D)*1e3
         
         return loss_total
+
 
     @property
     def n_parameters(self):
@@ -409,12 +412,10 @@ class SeriesEncoder(nn.Module):
 
 class SeriesAutoencoder(ZLatentBase):
     def __init__(self,
-                 wave_obs, 
                  wave_rest,
                  n_latent=5, 
                  n_hidden_dec=[128, 64, 32],  
                  dropout=0,
-                 loss='l2',
                 ):
         
         encoder = SeriesEncoder(n_latent, dropout=dropout)
@@ -426,7 +427,6 @@ class SeriesAutoencoder(ZLatentBase):
             dropout=dropout,
         )
         
-
         super(SeriesAutoencoder, self).__init__(
             encoder,
             decoder,
