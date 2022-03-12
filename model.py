@@ -245,6 +245,14 @@ class SpectrumDecoder(Decoder):
         if instrument is not None:
             wave_obs = instrument.wave_obs
 
+            # convolve with LSF
+            if instrument.lsf is not None:
+                spectrum_restframe = instrument.lsf(spectrum_restframe.unsqueeze(1)).squeeze(1)
+
+            # apply calibration function
+            if instrument.calibration is not None:
+                spectrum_restframe = instrument.calibration(wave_rest, spectrum_restframe)
+
         return Interp1d()(wave_redshifted, spectrum_restframe, wave_obs)
 
     @property
@@ -303,8 +311,8 @@ class BaseAutoencoder(nn.Module):
 class SpectrumAutoencoder(BaseAutoencoder):
     def __init__(self,
                  wave_rest,
-                 n_latent=5,
-                 n_hidden=[128, 64, 32],
+                 n_latent=10,
+                 n_hidden=(1024, 256, 64),
                  dropout=0,
                 ):
 
@@ -337,3 +345,16 @@ class Instrument(nn.Module):
 
         self.lsf = lsf
         self.calibration = calibration
+
+    def set_lsf(self, lsf_kernel, wave_kernel, wave_rest, requires_grad=False):
+        # resample in wave_rest pixels
+        h = (wave_rest.max() - wave_rest.min()) / len(wave_rest)
+        wave_kernel_rest = torch.arange(wave_kernel.min().floor(), wave_kernel.max().ceil(), h)
+        # make sure kernel has odd length for padding 'same'
+        if len(wave_kernel_rest) % 2 == 0:
+            wave_kernel_rest = torch.concat((wave_kernel_rest, torch.tensor([wave_kernel_rest.max() + h,])), 0)
+        lsf_kernel_rest = Interp1d()(wave_kernel, lsf_kernel, wave_kernel_rest)
+
+        # construct conv1d layer
+        self.lsf = nn.Conv1d(1, 1, len(lsf_kernel_rest), bias=False, padding='same')
+        self.lsf.weight = nn.Parameter(lsf_kernel_rest.flip(0).reshape(1,1,-1), requires_grad=requires_grad)

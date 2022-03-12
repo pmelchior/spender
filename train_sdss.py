@@ -87,9 +87,9 @@ def train(model, accelerator, instrument, trainloader, validloader, n_epoch=200,
 
 
 n_latent = 10
-n_model = 1
+n_model = 5
 label = "model.series.test"
-n_epoch = 100
+n_epoch = 400
 
 accelerator = Accelerator()
 trainloader, validloader, sdss = accelerator.prepare(trainloader, validloader, sdss)
