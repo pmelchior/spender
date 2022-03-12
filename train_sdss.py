@@ -4,24 +4,24 @@
 #!pip install git+https://github.com/aliutkus/torchinterp1d.git
 #!pip install accelerate
 
+import sys
+assert len(sys.argv) == 2, "usage: train_sdss <path_to_spectra.npz>"
+filename = sys.argv[1]
 
-import os, sys 
 import numpy as np
 import torch
 from torch import nn
 from torch import optim
-from torch.distributions.normal import Normal
-
-from model import *
 from accelerate import Accelerator
 
+from model import *
 
 # load data, specify GPU to prevent copying later
 # TODO: use torch.cuda.amp.autocast() for FP16/BF16 typcast
 # TODO: need dynamic data loader if we use larger data sets
 device = torch.device(type='cuda', index=0)
-data = load_data('/scratch/network/melchoir/sdss_spectra.38816.npz', which="train", device=device)
-valid_data = load_data('/scratch/network/melchoir/sdss_spectra.38816.npz', which="valid", device=device)
+data = load_data(filename, which="train", device=device)
+valid_data = load_data(filename, which="valid", device=device)
 
 batch_size=2048
 trainloader = torch.utils.data.DataLoader(
@@ -33,9 +33,11 @@ validloader = torch.utils.data.DataLoader(
     torch.utils.data.TensorDataset(valid_data['y'], valid_data['w'], valid_data['z']),
     batch_size=batch_size)
 
+# define SDSS instrument
+wave_obs = torch.tensor(data['wave'], dtype=torch.float32)
+sdss = Instrument(wave_obs)
 
 # restframe wavelength for reconstructed spectra
-wave_obs = torch.tensor(data['wave'], dtype=torch.float32)
 lmbda_min = data['wave'].min()/(1+data['z'].max())
 lmbda_max = data['wave'].max()
 bins = int(data['wave'].shape[0] * (1 + data['z'].max()))
@@ -44,7 +46,7 @@ wave_rest = torch.linspace(lmbda_min, lmbda_max, bins, dtype=torch.float32)
 print ("Observed frame:\t{:.0f} .. {:.0f} A ({} bins)".format(wave_obs.min(), wave_obs.max(), len(wave_obs)))
 print ("Restframe:\t{:.0f} .. {:.0f} A ({} bins)".format(lmbda_min, lmbda_max, bins))
 
-def train(model, accelerator, wave_obs, trainloader, validloader, n_epoch=200, label="", silent=False, lr=3e-4):
+def train(model, accelerator, instrument, trainloader, validloader, n_epoch=200, label="", silent=False, lr=3e-4):
     
     optimizer = optim.Adam(model.parameters(), lr=lr)
     scheduler = optim.lr_scheduler.OneCycleLR(optimizer, lr, total_steps=n_epoch)
@@ -57,7 +59,7 @@ def train(model, accelerator, wave_obs, trainloader, validloader, n_epoch=200, l
         for batch in trainloader:
             spec, w, z = batch
             optimizer.zero_grad()
-            loss = model.loss(spec, wave_obs, w, z0=z)
+            loss = model.loss(spec, w, instrument=instrument, z=z)
             accelerator.backward(loss)
             train_loss += loss.item() 
             optimizer.step()        
@@ -68,7 +70,7 @@ def train(model, accelerator, wave_obs, trainloader, validloader, n_epoch=200, l
             valid_loss = 0.
             for batch in validloader:
                 spec, w, z = batch
-                loss = model.loss(spec, wave_obs, w, z0=z)
+                loss = model.loss(spec, w, instrument=instrument, z=z)
                 valid_loss += loss.item()
             valid_loss /= len(validloader.dataset)
 
@@ -85,21 +87,17 @@ def train(model, accelerator, wave_obs, trainloader, validloader, n_epoch=200, l
 
 
 n_latent = 10
-n_model = 5
+n_model = 1
 label = "model.series.test"
 n_epoch = 100
 
 accelerator = Accelerator()
-trainloader, validloader = accelerator.prepare(trainloader, validloader)
-wave_obs = wave_obs.to(accelerator.device)
+trainloader, validloader, sdss = accelerator.prepare(trainloader, validloader, sdss)
 
 for i in range(n_model):
-    n_hidden = (1024, 256, 64)
-    model = SeriesAutoencoder(
+    model = SpectrumAutoencoder(
             wave_rest,
             n_latent=n_latent,
-            n_hidden_dec=n_hidden,
     )
     print (f"--- Model {i}/{n_model}")
-    print (f"Parameters:", model.n_parameters)
-    train(model, accelerator, wave_obs, trainloader, validloader, n_epoch=n_epoch, label=label+f".{i}", lr=1e-3)
+    train(model, accelerator, sdss, trainloader, validloader, n_epoch=n_epoch, label=label+f".{i}", lr=1e-3)
