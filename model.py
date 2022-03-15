@@ -249,11 +249,13 @@ class SpectrumDecoder(Decoder):
             if instrument.lsf is not None:
                 spectrum_restframe = instrument.lsf(spectrum_restframe.unsqueeze(1)).squeeze(1)
 
-            # apply calibration function
-            if instrument.calibration is not None:
-                spectrum_restframe = instrument.calibration(wave_rest, spectrum_restframe)
+        spectrum = Interp1d()(wave_redshifted, spectrum_restframe, wave_obs)
 
-        return Interp1d()(wave_redshifted, spectrum_restframe, wave_obs)
+        # apply calibration function to observed spectrum
+        if instrument is not None and instrument.calibration is not None:
+            spectrum = instrument.calibration(wave_obs, spectrum)
+
+        return spectrum
 
     @property
     def n_parameters(self):
@@ -354,6 +356,7 @@ class Instrument(nn.Module):
         if len(wave_kernel_rest) % 2 == 0:
             wave_kernel_rest = torch.concat((wave_kernel_rest, torch.tensor([wave_kernel_rest.max() + h,])), 0)
         lsf_kernel_rest = Interp1d()(wave_kernel, lsf_kernel, wave_kernel_rest)
+        lsf_kernel_rest /= lsf_kernel_rest.sum()
 
         # construct conv1d layer
         self.lsf = nn.Conv1d(1, 1, len(lsf_kernel_rest), bias=False, padding='same')
