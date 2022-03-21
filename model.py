@@ -10,9 +10,9 @@ def get_norm(x):
     norm = np.median(x, axis=1)
     return norm
 
-# read in SDSS theta and spectra 
+# read in SDSS theta and spectra
 def load_data(path, which=None, device=None):
-    
+
     assert which in [None, "train", "valid", "test"]
 
     data = np.load(path)
@@ -28,7 +28,7 @@ def load_data(path, which=None, device=None):
           "test": slice(n_train+n_valid, n_train+n_valid+n_test),
          }
     sl = sl[which]
-    
+
     y = data['spectra'][sl]
     wave = 10**data['wave']
     z = data['z'][sl]
@@ -39,7 +39,7 @@ def load_data(path, which=None, device=None):
     # SDSS IDs
     id = data['plate'][sl], data['mjd'][sl], data['fiber'][sl]
     id = [f"{plate}-{mjd}-{fiber}" for plate, mjd, fiber in np.array(id).T]
-    
+
     # get normalization
     norm = get_norm(y)
 
@@ -54,16 +54,16 @@ def load_data(path, which=None, device=None):
     zerr = zerr[sel]
     norm = norm[sel]
     id = np.array(id)[sel]
-    
-    
+
+
     print (f"Loading {len(y)} spectra (which = {which})")
-    
+
     y = torch.tensor(y, dtype=torch.float32, device=device)
     w = torch.tensor(w, dtype=torch.float32, device=device)
     z = torch.tensor(z, dtype=torch.float32, device=device)
     zerr = torch.tensor(zerr, dtype=torch.float32, device=device)
-        
-    return {"wave": wave, 
+
+    return {"wave": wave,
             "y": y,
             "w": w,
             "z": z,
@@ -87,9 +87,9 @@ def load_model(fileroot):
 
     print (f"model {fileroot}: iterations {len(loss)}, final loss: {loss[-1]}")
     return model, loss
-        
+
 def load_models(label, n_config):
-    models, losses = {}, {} 
+    models, losses = {}, {}
     best_model, best_loss = 0, np.inf
     for i in range(n_config):
         try:
@@ -102,36 +102,35 @@ def load_models(label, n_config):
                 best_model = i
         except FileNotFoundError:
             pass
-        
+
     return models, losses, best_model
 
 
 # Redshift distribution from histogram
 class RedshiftPrior(nn.Module):
     def __init__(self,
-                 zbins, 
-                 pz, 
+                 zbins,
+                 pz,
                 ):
-        
+
         super(RedshiftPrior, self).__init__()
-        
+
         # register tensors on the same dives as the entire model
         self.register_buffer('zbins', zbins)
-        
+
         # extend counts to provide an "empty" bin for extreme values outside of the histogram
         pz_ = torch.empty(len(zbins))
         pz_[0] = 1e-16
         pz_[1:] = pz / pz.sum()
         self.register_buffer('pz', pz_)
-        
-        
+
     def forward(self, z):
         loc = torch.argmin((z.unsqueeze(1) > self.zbins).float(), axis=1)
         return self.pz[loc]
-    
+
     def log_prob(self, z):
         return torch.log(self.forward(z))
-    
+
     def sample(self, size=1):
         idx = self.pz.multinomial(num_samples=size, replacement=True) - 1
         u = torch.rand(size)
@@ -139,30 +138,56 @@ class RedshiftPrior(nn.Module):
         return z_
 
 
-# simple MLP for encoder and decoder
-class Encoder(nn.Module):
-    def __init__(self,
-                 n_feature,
-                 n_latent,
-                 n_hidden=[128, 64, 32],
-                 dropout=0):
-        super(Encoder, self).__init__()
-        self.n_latent = n_latent
-        self.n_feature = n_feature
+#### Spectrum encoder    ####
+#### based on Serra 2018 ####
+class SpectrumEncoder(nn.Module):
+    def __init__(self, n_latent, dropout=0):
+        super(SpectrumEncoder, self).__init__()
 
-        layer = []
-        n_hidden = [n_feature, *n_hidden, n_latent]
-        for i in range(len(n_hidden)-1):
-            layer.append(nn.Linear(n_hidden[i], n_hidden[i+1]))
-            layer.append(nn.LeakyReLU())
-            layer.append(nn.Dropout(p=dropout))
-        self.encoder = nn.Sequential(*layer)
-    
+        filters = [128, 256, 512]
+        sizes = [5, 11, 21]
+
+        convs = []
+        for i in range(3):
+            f_in = 1 if i == 0 else filters[i-1]
+            f = filters[i]
+            s = sizes[i]
+            p = s // 2
+            conv = nn.Conv1d(in_channels=f_in,
+                             out_channels=f,
+                             kernel_size=s,
+                             padding=p,
+                            )
+            norm = nn.InstanceNorm1d(f)
+            act = nn.PReLU(num_parameters=f)
+            drop = nn.Dropout(p=dropout)
+            convs.append(nn.Sequential(conv, norm, act, drop))
+
+        self.conv1, self.conv2, self.conv3 = tuple(convs)
+        self.pool1, self.pool2 = tuple(nn.MaxPool1d(s, padding=s//2) for s in sizes[:2])
+        self.softmax = nn.Softmax(dim=2)
+        self.linear = nn.Linear(filters[-1] // 2, n_latent)
+        self.n_latent = n_latent
+
     def forward(self, x):
-        x = self.encoder(x)
+        x = x.unsqueeze(1)
+        x = self.pool1(self.conv1(x))
+        x = self.pool2(self.conv2(x))
+        x = self.conv3(x)
+        C = x.shape[1]
+        h, a = torch.split(x, [C//2,C//2], dim=1)
+        a = self.softmax(a)
+        x = torch.sum(h * a, dim=2)
+        x = self.linear(x)
         return x
 
-    
+    @property
+    def n_parameters(self):
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
+
+#### Spectrum decoder ####
+#### Simple MLP but with explicit redshift and instrument path ####
 class Decoder(nn.Module):
     def __init__(self,
                  n_feature,
@@ -180,255 +205,162 @@ class Decoder(nn.Module):
                 layer.append(nn.LeakyReLU())
                 layer.append(nn.Dropout(p=dropout))
         self.decoder = nn.Sequential(*layer)
-        
+
     def forward(self, x):
         x = self.decoder(x)
         return x
 
-                 
-class AutoEncoder(nn.Module):
-    def __init__(
-        self,
-        encoder,
-        decoder,
-    ):
-        
-        super(AutoEncoder, self).__init__()
-        
-        self.encoder = encoder
-        self.decoder = decoder
-        
-    def forward(self, x):
-        x = self.encode(x)
-        x = self.decode(x)
-        return x
-        
-    def encode(self, x):
-        return self.encoder(x)
-
-    def decode(self, x):
-        return self.decoder(x)
-
-
-
-# Base class for all models with explicit redshifting transformation
-class ZLatentBase(nn.Module):
+class SpectrumDecoder(Decoder):
     def __init__(self,
-                 encoder,
-                 decoder,
                  wave_rest,
-                ):
-        
-        super(ZLatentBase, self).__init__()
-        self.encoder = encoder
-        self.decoder = decoder
-        
+                 n_latent=5,
+                 n_hidden=[128, 64, 32],
+                 dropout=0):
+
+        super(SpectrumDecoder, self).__init__(
+            len(wave_rest),
+            n_latent,
+            n_hidden=n_hidden,
+            dropout=dropout,
+            )
+
         # register wavelength tensors on the same device as the entire model
         self.register_buffer('wave_rest', wave_rest)
 
-        
+    def decode(self, s):
+        return super().forward(s)
+
+    def forward(self, s, instrument=None, z=0):
+        # restframe
+        spectrum = self.decode(s)
+        # observed frame
+        if instrument is not None or z != 0:
+            spectrum = self.transform(spectrum, instrument=instrument, z=z)
+        return spectrum
+
+    def transform(self, spectrum_restframe, instrument=None, z=0):
+        wave_redshifted = (self.wave_rest.unsqueeze(1) * (1 + z)).T
+        wave_obs = self.wave_rest
+
+        if instrument is not None:
+            wave_obs = instrument.wave_obs
+
+            # convolve with LSF
+            if instrument.lsf is not None:
+                spectrum_restframe = instrument.lsf(spectrum_restframe.unsqueeze(1)).squeeze(1)
+
+        spectrum = Interp1d()(wave_redshifted, spectrum_restframe, wave_obs)
+
+        # apply calibration function to observed spectrum
+        if instrument is not None and instrument.calibration is not None:
+            spectrum = instrument.calibration(wave_obs, spectrum)
+
+        return spectrum
+
+    @property
+    def n_parameters(self):
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
+
+# Combine spectrum encoder and decoder
+class BaseAutoencoder(nn.Module):
+    def __init__(self,
+                 encoder,
+                 decoder,
+                ):
+
+        super(BaseAutoencoder, self).__init__()
+        assert encoder.n_latent == decoder.n_latent
+        self.encoder = encoder
+        self.decoder = decoder
+
     def encode(self, x):
         return self.encoder(x)
-    
+
     def decode(self, x):
         return self.decoder(x)
-    
-    def _forward(self, x, wave, z0=0):
-        s = self.encode(x)
-        spectrum_restframe = self.decode(s)
-        spectrum_observed = self.transform(spectrum_restframe, wave, z0)
-        return s, spectrum_restframe, spectrum_observed
-    
-    def _forward_resample(self, x, z0=0):
-        s = self.encode(x)
-        spectrum_restframe = self.decode(s)
-        spectrum_observed = self.resample(spectrum_restframe, z0)
-        return s, spectrum_restframe, spectrum_observed
-    
 
-    def forward(self, x, wave, z0=0):
-        s, spectrum_restframe, spectrum_observed = self._forward(x, wave, z0=z0)
+    def _forward(self, x, instrument=None, z=0):
+        s = self.encode(x)
+        spectrum_restframe = self.decoder.decode(s)
+        spectrum_observed = self.decoder.transform(spectrum_restframe, instrument=instrument, z=z)
+        return s, spectrum_restframe, spectrum_observed
+
+    def forward(self, x, instrument=None, z=0):
+        s, spectrum_restframe, spectrum_observed = self._forward(x, instrument=instrument, z=z)
         return spectrum_observed
-        
-    def transform(self, spectrum_restframe, wave, z):
-        wave_redshifted = (self.wave_rest.unsqueeze(1) * (1 + z)).T
-        return Interp1d()(wave_redshifted, spectrum_restframe, wave)
-    
-    
-    
-    def convert_matrix(self, z, wave_model,spect_model,wave_redshifted):
 
-        x = wave_model.cpu().detach().numpy()
-        X = wave_redshifted.cpu().detach().numpy()
-        
-        y_array = spect_model.cpu().detach().numpy()
-        z_array = z.cpu().detach().numpy()
-        print("wave_model:",x.shape,"wave_redshifted",X.shape,
-              "\n\ny:",y_array.shape,"z:",z_array.shape)
-        # PSF properties
-
-        h = 1.16
-        #H = 1.4 # wave_obs
-
-        nspec = len(z_array)
-        nX = len(X)
-
-        Hv = np.ediff1d(X, to_end=2.131836)
-        print("Hv:",Hv)
-        
-        spectrum_redshifted = np.zeros((nspec,nX))
-        for ii in range(nspec):
-
-            Z = z_array[ii]
-            print("Z:",Z)
-            
-            SI_m = sici(np.pi/h*(Hv[:,None]/2 + X[:,None]/(1+Z) - 
-                                 x[None,:]))[0]
-            SI_p = sici(np.pi/h*(Hv[:,None]/2 - X[:,None]/(1+Z) + 
-                                 x[None,:]))[0]
-            
-            print("SI_m:",SI_m.shape)
-            
-            A_matrix = (SI_m+SI_p) * h / np.pi
-
-            print("A_matrix:",A_matrix.shape)
-            #exit()
-            
-            spectrum_redshifted[ii] = A_matrix /Hv[:,None] @ y_array[ii]   
-            
-        return spectrum_redshifted
-
-
-    def resample(self, spectrum_restframe, z):
-        wave_model = self.wave_rest
-        wave_redshifted = self.wave_obs
-        
-        spectrum_redshifted = self.convert_matrix(z, wave_model, 
-                                                  spectrum_restframe,
-                                                  wave_redshifted)
-
-        return spectrum_redshifted
-
-
-    def loss(self, x, wave, w, z0=0, individual=False):
-        spectrum_observed = self.forward(x, wave, z0=z0)
+    def loss(self, x, w, instrument=None, z=0, individual=False):
+        spectrum_observed = self.forward(x, instrument=instrument, z=z)
         return self._loss(x, w, spectrum_observed, individual=individual)
-                
+
     def _loss(self, x, w, spectrum_observed, individual=False):
         # proper neg log likelihood, w = inverse variance
         mask = w > 1e-6
         D = (mask).sum(dim=1)
         lognorm =  D / 2 * np.log(2 * np.pi)
-        tiny = 1e-10
-        #lognorm -= torch.sum(torch.log(w + tiny), dim=1)
-        if individual:
-
-            return torch.sum(0.5 * w * (x - spectrum_observed).pow(2), dim=1), D
         
         loss_ind = torch.sum(0.5 * w * (x - spectrum_observed).pow(2), dim=1)
-        loss_total = torch.sum(loss_ind/D)*1e3
         
+        if individual:
+            return loss_ind, D
+        
+        loss_total = torch.sum(loss_ind/D)
         return loss_total
-
 
     @property
     def n_parameters(self):
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
-    
-#### Simple MLP encoder ####
-
-class ZLatentAutoEncoder(ZLatentBase):
-    def __init__(self,
-                 wave_obs, 
-                 wave_rest, 
-                 n_latent=5, 
-                 n_hidden_enc=[128, 64, 32],
-                 n_hidden_dec=[128, 64, 32],   
-                 dropout=0,
-        ):
-        
-        encoder = Encoder(
-            len(wave_obs),
-            n_latent,
-            n_hidden=n_hidden_enc,
-            dropout=dropout,
-        )
-        decoder = Decoder(
-            len(wave_rest),
-            n_latent,
-            n_hidden=n_hidden_dec,
-            dropout=dropout,
-        )
-        
-        super(ZLatentAutoEncoder, self).__init__(
-            encoder,
-            decoder,
-            wave_obs,
-            wave_rest,
-        )
-
-#### Series encoder ####
-
-class SeriesEncoder(nn.Module):
-    def __init__(self, n_latent, dropout=0):
-        super(SeriesEncoder, self).__init__()
-        
-        filters = [128, 256, 512]
-        sizes = [5, 11, 21]
-        
-        convs = []
-        for i in range(3):
-            f_in = 1 if i == 0 else filters[i-1]
-            f = filters[i]
-            s = sizes[i]
-            p = s // 2
-            conv = nn.Conv1d(in_channels=f_in,
-                             out_channels=f,
-                             kernel_size=s,
-                             padding=p,
-                            )
-            norm = nn.InstanceNorm1d(f)
-            act = nn.PReLU(num_parameters=f)
-            drop = nn.Dropout(p=dropout)
-            convs.append(nn.Sequential(conv, norm, act, drop))
-        
-        self.conv1, self.conv2, self.conv3 = tuple(convs)
-        self.pool1, self.pool2 = tuple(nn.MaxPool1d(s, padding=s//2) for s in sizes[:2])
-        self.softmax = nn.Softmax(dim=2)
-        self.linear = nn.Linear(filters[-1] // 2, n_latent)
-        
-    def forward(self, x):
-        x = x.unsqueeze(1)
-        x = self.pool1(self.conv1(x))
-        x = self.pool2(self.conv2(x))
-        x = self.conv3(x)
-        C = x.shape[1]
-        h, a = torch.split(x, [C//2,C//2], dim=1)
-        a = self.softmax(a)
-        x = torch.sum(h * a, dim=2)
-        x = self.linear(x)
-        return x
 
 
-class SeriesAutoencoder(ZLatentBase):
+class SpectrumAutoencoder(BaseAutoencoder):
     def __init__(self,
                  wave_rest,
-                 n_latent=5, 
-                 n_hidden_dec=[128, 64, 32],  
+                 n_latent=10,
+                 n_hidden=(1024, 256, 64),
                  dropout=0,
                 ):
-        
-        encoder = SeriesEncoder(n_latent, dropout=dropout)
 
-        decoder = Decoder(
-            len(wave_rest),
+        encoder = SpectrumEncoder(n_latent, dropout=dropout)
+
+        decoder = SpectrumDecoder(
+            wave_rest,
             n_latent,
-            n_hidden=n_hidden_dec,
+            n_hidden=n_hidden,
             dropout=dropout,
         )
-        
-        super(SeriesAutoencoder, self).__init__(
+
+        super(SpectrumAutoencoder, self).__init__(
             encoder,
             decoder,
-            wave_rest,
         )
+
+
+class Instrument(nn.Module):
+    def __init__(self,
+                 wave_obs,
+                 lsf=None,
+                 calibration=None,
+                ):
+
+        super(Instrument, self).__init__()
+
+        # register wavelength tensors on the same device as the entire model
+        self.register_buffer('wave_obs', wave_obs)
+
+        self.lsf = lsf
+        self.calibration = calibration
+
+    def set_lsf(self, lsf_kernel, wave_kernel, wave_rest, requires_grad=False):
+        # resample in wave_rest pixels
+        h = (wave_rest.max() - wave_rest.min()) / len(wave_rest)
+        wave_kernel_rest = torch.arange(wave_kernel.min().floor(), wave_kernel.max().ceil(), h)
+        # make sure kernel has odd length for padding 'same'
+        if len(wave_kernel_rest) % 2 == 0:
+            wave_kernel_rest = torch.concat((wave_kernel_rest, torch.tensor([wave_kernel_rest.max() + h,])), 0)
+        lsf_kernel_rest = Interp1d()(wave_kernel, lsf_kernel, wave_kernel_rest)
+        lsf_kernel_rest /= lsf_kernel_rest.sum()
+
+        # construct conv1d layer
+        self.lsf = nn.Conv1d(1, 1, len(lsf_kernel_rest), bias=False, padding='same')
+        self.lsf.weight = nn.Parameter(lsf_kernel_rest.flip(0).reshape(1,1,-1), requires_grad=requires_grad)
