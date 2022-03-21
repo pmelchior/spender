@@ -308,6 +308,7 @@ class BaseAutoencoder(nn.Module):
         loss_total = torch.sum(loss_ind/D)
         return loss_total
 
+
     @property
     def n_parameters(self):
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
@@ -364,3 +365,4 @@ class Instrument(nn.Module):
         # construct conv1d layer
         self.lsf = nn.Conv1d(1, 1, len(lsf_kernel_rest), bias=False, padding='same')
         self.lsf.weight = nn.Parameter(lsf_kernel_rest.flip(0).reshape(1,1,-1), requires_grad=requires_grad)
+
