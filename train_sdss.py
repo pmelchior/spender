@@ -14,14 +14,18 @@ from torch import nn
 from torch import optim
 from accelerate import Accelerator
 
+
 from model import *
+
 
 # load data, specify GPU to prevent copying later
 # TODO: use torch.cuda.amp.autocast() for FP16/BF16 typcast
 # TODO: need dynamic data loader if we use larger data sets
 device = torch.device(type='cuda', index=0)
+
 data = load_data(filename, which="train", device=device)
 valid_data = load_data(filename, which="valid", device=device)
+
 
 batch_size=2048
 trainloader = torch.utils.data.DataLoader(
@@ -88,11 +92,14 @@ def train(model, accelerator, instrument, trainloader, validloader, n_epoch=200,
 
 n_latent = 10
 n_model = 5
+
 label = "model.series.test"
 n_epoch = 400
 
+
 accelerator = Accelerator()
 trainloader, validloader, sdss = accelerator.prepare(trainloader, validloader, sdss)
+
 
 for i in range(n_model):
     model = SpectrumAutoencoder(
@@ -100,4 +107,6 @@ for i in range(n_model):
             n_latent=n_latent,
     )
     print (f"--- Model {i}/{n_model}")
+
     train(model, accelerator, sdss, trainloader, validloader, n_epoch=n_epoch, label=label+f".{i}", lr=1e-3)
+
