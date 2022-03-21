@@ -317,15 +317,16 @@ class BaseAutoencoder(nn.Module):
         return self._loss(x, w, spectrum_observed, individual=individual)
 
     def _loss(self, x, w, spectrum_observed, individual=False):
-        # proper neg log likelihood, w = inverse variance
-        mask = w > 0
-        D = (mask).sum(dim=1)
-        lognorm =  D / 2 * np.log(2 * np.pi)
-        tiny = 1e-10
-        lognorm -= torch.sum(torch.log(w + tiny), dim=1)
+        # loss = average squared deviation in units of variance
+        # if the model is identical to observed spectrum (up to the noise)
+        # in every unmasked bin, then loss = 1 per object
+        D = (w > 0).sum(dim=1)
+        loss_ind = torch.sum(0.5 * w * (x - spectrum_observed).pow(2), dim=1)
+
         if individual:
-            return torch.sum(0.5 * w * (x - spectrum_observed).pow(2), dim=1) + lognorm
-        return torch.sum(0.5 * w * (x - spectrum_observed).pow(2)) + lognorm.sum()
+            return loss_ind / D
+
+        return torch.sum(loss_ind / D)
 
     @property
     def n_parameters(self):
