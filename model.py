@@ -144,11 +144,24 @@ class SpectrumEncoder(nn.Module):
     def __init__(self, n_latent, dropout=0):
         super(SpectrumEncoder, self).__init__()
 
+        # spectrum convolutions
         filters = [128, 256, 512]
         sizes = [5, 11, 21]
+        self.conv1, self.conv2, self.conv3 = self._conv_blocks(filters, sizes, dropout=dropout)
 
+        # weight convolutions: only need attention part, so 1/2 of all channels
+        filters = [f // 2 for f in filters ]
+        self.conv1w, self.conv2w, self.conv3w = self._conv_blocks(filters, sizes, dropout=dropout)
+
+        # pools and softmax work for spectra and weights
+        self.pool1, self.pool2 = tuple(nn.MaxPool1d(s, padding=s//2) for s in sizes[:2])
+        self.softmax = nn.Softmax(dim=2)
+        self.linear = nn.Linear(filters[-1], n_latent)
+        self.n_latent = n_latent
+
+    def _conv_blocks(self, filters, sizes, dropout=0):
         convs = []
-        for i in range(3):
+        for i in range(len(filters)):
             f_in = 1 if i == 0 else filters[i-1]
             f = filters[i]
             s = sizes[i]
@@ -162,21 +175,30 @@ class SpectrumEncoder(nn.Module):
             act = nn.PReLU(num_parameters=f)
             drop = nn.Dropout(p=dropout)
             convs.append(nn.Sequential(conv, norm, act, drop))
+        return tuple(convs)
 
-        self.conv1, self.conv2, self.conv3 = tuple(convs)
-        self.pool1, self.pool2 = tuple(nn.MaxPool1d(s, padding=s//2) for s in sizes[:2])
-        self.softmax = nn.Softmax(dim=2)
-        self.linear = nn.Linear(filters[-1] // 2, n_latent)
-        self.n_latent = n_latent
-
-    def forward(self, x):
+    def forward(self, x, w=None):
+        # spectrum compression
         x = x.unsqueeze(1)
         x = self.pool1(self.conv1(x))
         x = self.pool2(self.conv2(x))
         x = self.conv3(x)
-        C = x.shape[1]
-        h, a = torch.split(x, [C//2,C//2], dim=1)
-        a = self.softmax(a)
+        C = x.shape[1] // 2
+        h, a = torch.split(x, [C, C], dim=1)
+
+        # weight compression
+        if w is None:
+            aw = 1
+        else:
+            tiny = 1e-6
+            w = torch.log(w.unsqueeze(1) + tiny) # reduce dynamic range of w
+            w = self.pool1(self.conv1w(w))
+            w = self.pool2(self.conv2w(w))
+            aw = self.conv3w(w)
+
+        # modulate signal attention with weight attention
+        a = self.softmax(a * aw)
+        # apply attention
         x = torch.sum(h * a, dim=2)
         x = self.linear(x)
         return x
@@ -274,24 +296,24 @@ class BaseAutoencoder(nn.Module):
         self.encoder = encoder
         self.decoder = decoder
 
-    def encode(self, x):
-        return self.encoder(x)
+    def encode(self, x, w=None):
+        return self.encoder(x, w=w)
 
     def decode(self, x):
         return self.decoder(x)
 
-    def _forward(self, x, instrument=None, z=0):
-        s = self.encode(x)
+    def _forward(self, x, w=None, instrument=None, z=0):
+        s = self.encode(x, w=w)
         spectrum_restframe = self.decoder.decode(s)
         spectrum_observed = self.decoder.transform(spectrum_restframe, instrument=instrument, z=z)
         return s, spectrum_restframe, spectrum_observed
 
-    def forward(self, x, instrument=None, z=0):
-        s, spectrum_restframe, spectrum_observed = self._forward(x, instrument=instrument, z=z)
+    def forward(self, x, w=None, instrument=None, z=0):
+        s, spectrum_restframe, spectrum_observed = self._forward(x, w=w,  instrument=instrument, z=z)
         return spectrum_observed
 
     def loss(self, x, w, instrument=None, z=0, individual=False):
-        spectrum_observed = self.forward(x, instrument=instrument, z=z)
+        spectrum_observed = self.forward(x, w=w, instrument=instrument, z=z)
         return self._loss(x, w, spectrum_observed, individual=individual)
 
     def _loss(self, x, w, spectrum_observed, individual=False):
