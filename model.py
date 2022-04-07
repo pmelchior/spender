@@ -205,6 +205,7 @@ class SpectrumEncoder(nn.Module):
 
         # construct K independent linear estimators of latents for robust estimation
         assert self.n_feature % K == 0, "K must be integer factor of %d" % self.n_feature
+        assert self.n_feature // K >= self.n_latent, "K must not be larger than %d" % (self.n_feature // self.n_latent)
         self.K = K
         self._W = nn.Parameter(torch.Tensor(1, self.K, self.n_latent, self.n_feature // K))
         self.T = T
