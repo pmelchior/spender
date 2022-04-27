@@ -11,6 +11,11 @@ def get_norm(x):
     norm = np.median(x, axis=1)
     return norm
 
+def permute_indices(length,n_redundant=1):
+    wrap_indices = torch.arange(length).repeat(n_redundant)
+    rand_permut = wrap_indices[torch.randperm(length*n_redundant)]
+    return rand_permut
+
 # adapted from https://github.com/sigeisler/reliable_gnn_via_robust_aggregation/
 def _distance_matrix(x, eps_factor=1e2):
     """Naive dense distance matrix calculation.
@@ -124,7 +129,9 @@ def load_model(fileroot):
 
     path = f'{fileroot}.pt'
     model = torch.load(path, map_location=device)
-    model.eval()
+    if type(model)==list or type(model)==tuple:
+        [m.eval() for m in model]
+    else: model.eval()
     path = f'{fileroot}.losses.npy'
     loss = np.load(path)
 
@@ -185,10 +192,10 @@ class RedshiftPrior(nn.Module):
 #### based on Serra 2018 ####
 #### with robust feature combination from Geisler 2020 ####
 class SpectrumEncoder(nn.Module):
-    def __init__(self, n_latent, K=16, T=0.5, dropout=0):
+    def __init__(self, n_latent, K=16, n_redundant=2, T=0.5, dropout=0):
         super(SpectrumEncoder, self).__init__()
         self.n_latent = n_latent
-
+        self.n_redundant = n_redundant
         # spectrum convolutions
         filters = [128, 256, 512]
         sizes = [5, 11, 21]
@@ -199,15 +206,18 @@ class SpectrumEncoder(nn.Module):
         self.conv1w, self.conv2w, self.conv3w = self._conv_blocks(filters, sizes, dropout=dropout)
         self.n_feature = filters[-1]
 
+        permut = permute_indices(self.n_feature,self.n_redundant)
+        self.permut = permut
+        
         # pools and softmax work for spectra and weights
         self.pool1, self.pool2 = tuple(nn.MaxPool1d(s, padding=s//2) for s in sizes[:2])
         self.softmax = nn.Softmax(dim=-1)
 
         # construct K independent linear estimators of latents for robust estimation
         assert self.n_feature % K == 0, "K must be integer factor of %d" % self.n_feature
-        assert self.n_feature // K >= self.n_latent, "K must not be larger than %d" % (self.n_feature // self.n_latent)
+        assert self.n_redundant*self.n_feature // K >= self.n_latent, "K must not be larger than %d" % (self.n_redundant*self.n_feature // self.n_latent)
         self.K = K
-        self._W = nn.Parameter(torch.Tensor(1, self.K, self.n_latent, self.n_feature // K))
+        self._W = nn.Parameter(torch.Tensor(1, self.K, self.n_latent, self.n_feature*self.n_redundant // K))
         self.T = T
 
     def _conv_blocks(self, filters, sizes, dropout=0):
@@ -253,8 +263,12 @@ class SpectrumEncoder(nn.Module):
         # apply attention
         x = torch.sum(h * a, dim=2)
         # linear map of features
+        
+        # randomly assign each feature multiple times
+        x = x[:,self.permut]
+        
         # split into K independent estimators of latents
-        x = torch.matmul(self._W, x.reshape(N, self.K, self.n_feature // self.K, 1)).squeeze(-1)
+        x = torch.matmul(self._W, x.reshape(N, self.K, self.n_redundant*self.n_feature // self.K, 1)).squeeze(-1)
         # robust combination with soft medoid
         x = soft_weighted_medoid(x, temperature=self.T)
         return x
@@ -395,11 +409,13 @@ class SpectrumAutoencoder(BaseAutoencoder):
                  n_latent=10,
                  n_hidden=(1024, 256, 64),
                  K=16,
+                 n_redundant=2,
                  T=0.5,
                  dropout=0,
                 ):
 
-        encoder = SpectrumEncoder(n_latent, K=K, T=T, dropout=dropout)
+        encoder = SpectrumEncoder(n_latent, K=K, n_redundant=n_redundant,
+                                  T=T, dropout=dropout)
 
         decoder = SpectrumDecoder(
             wave_rest,

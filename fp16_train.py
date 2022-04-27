@@ -3,7 +3,7 @@
 
 #!pip install git+https://github.com/aliutkus/torchinterp1d.git
 #!pip install accelerate
-import os, sys, time
+import io, os, sys, time
 import numpy as np
 import pickle
 import torch
@@ -34,8 +34,8 @@ n_encoder = len(encoder_names)
 skip=[False,True]
 
 debug = False
-bat_prefix = "mixed"#"randz"
-copy_exists = False
+bat_prefix = "normalized"#"randz"
+copy_exists = True
 #calib_active = [False,True]
 
 SED = {"data":[True,False], "decoder":True}
@@ -43,6 +43,8 @@ BE = {"data":[False,True], "decoder":False}
 D = {"data":[True,True],"encoder":[False,False],"decoder":True}
 SEBE = {"data":[True,True], "decoder":False}
 #FULL = {"data":[True,True],"decoder":True}
+model_K = 32
+n_redundant = 3
 
 def prepare_train(seq,niter=800):
     for d in seq:
@@ -53,9 +55,9 @@ def prepare_train(seq,niter=800):
 train_sequence=prepare_train([SED])
 if "debug" in sys.argv:debug=True
 
-model_k = 1
+model_k = 0
 #code = "sdss100k"
-code = "mix"
+code = "redundancy"
 
 label = "%s/robust-%s"%(savemodel,code)
 #save_copy = "%s/robust-copy.%d.pt"%(savemodel,model_k)
@@ -63,11 +65,55 @@ label = "%s/robust-%s"%(savemodel,code)
 # model number
 # load from
 label_ = label+".%d"%model_k
-#label_ = "%s/robust-sdss100k.0"%savemodel
+#label_ = "%s/robust-sdss100k.1"%savemodel
 #label_ = "%s/robust-%s.%d"%(savemodel,"test",5)
 
+class LogLinearDistribution():
+    def __init__(self, a, bound):
+        x0,xf = bound
+        self.bound = bound
+        self.a = a
+        self.norm = -a*np.log(10)/(10**(a*x0)-10**(a*xf))
+        
+    def pdf(self,x):
+        pdf = self.norm*10**(self.a*x)
+        pdf[(x<self.bound[0])|(x>self.bound[1])] = 0
+        return pdf
+    
+    def cdf(self,x):
+        factor = self.norm/(-self.a*np.log(10))
+        cdf = -factor*(10**(self.a*x)-10**(self.a*self.bound[0]))
+        cdf[x<self.bound[0]] = 0
+        cdf[x>self.bound[1]] = 1
+        return cdf
+    
+    def inv_cdf(self,cdf):
+        factor = self.norm/(-self.a*np.log(10))
+        return (1/self.a)*torch.log10(10**(self.a*self.bound[0])-cdf/factor)
 
-# Define function
+class CPU_Unpickler(pickle.Unpickler):
+    def find_class(self, module, name):
+        if module == 'torch.storage' and name == '_load_from_bytes':
+            return lambda b: torch.load(io.BytesIO(b), map_location='cpu')
+        else: return super().find_class(module, name)
+
+def load_batch(k,data_file,mode="train"):
+    dataname = os.path.basename(data_file).split(".")[0]
+    batch_name = "[%s]%s-%s-%d.pkl"%(bat_prefix,dataname,mode,k)
+    
+    with open("%s/%s"%(dynamic_dir,batch_name), 'rb') as f:
+        if torch.cuda.is_available():batch_copy = pickle.load(f)
+        else:batch_copy = CPU_Unpickler(f).load()
+    return batch_copy
+
+def save_batch(batch_copy,k,data_file,mode="train"):
+    dataname = os.path.basename(data_file).split(".")[0]
+    batch_name = "[%s]%s-%s-%d.pkl"%(bat_prefix,dataname,mode,k)
+    with open("%s/%s"%(dynamic_dir,batch_name), 'wb') as f:
+        pickle.dump(batch_copy,f)
+    print("Saving to %s/%s.."%(dynamic_dir,batch_name))
+    return
+
 def mem_report():
     print("CPU RAM Free: " + humanize.naturalsize( psutil.virtual_memory().available ))
   
@@ -94,30 +140,7 @@ def load_model(fileroot):
 
     print (f"model {fileroot}: iterations {len(loss)}, final loss: {loss[-1]}")
     return model, loss
-
-class LogLinearDistribution():
-    def __init__(self, a, bound):
-        x0,xf = bound
-        self.bound = bound
-        self.a = a
-        self.norm = -a*np.log(10)/(10**(a*x0)-10**(a*xf))
-        
-    def pdf(self,x):
-        pdf = self.norm*10**(self.a*x)
-        pdf[(x<self.bound[0])|(x>self.bound[1])] = 0
-        return pdf
-    
-    def cdf(self,x):
-        factor = self.norm/(-self.a*np.log(10))
-        cdf = -factor*(10**(self.a*x)-10**(self.a*self.bound[0]))
-        cdf[x<self.bound[0]] = 0
-        cdf[x>self.bound[1]] = 1
-        return cdf
-    
-    def inv_cdf(self,cdf):
-        factor = self.norm/(-self.a*np.log(10))
-        return (1/self.a)*torch.log10(10**(self.a*self.bound[0])-cdf/factor)
-    
+  
 def insert_jitters(spec,number,slope=-1.32,bound=[0.0,2]):
     number = int(number)
     location = torch.randint(len(spec), device=device,
@@ -180,6 +203,18 @@ def jitter_redshift(batch, params, inst):
             w_new[i][loc] = 1/(amp**2+1/w_new[i][loc])
             record.append([z_offset[i],n_jit[i]])
         
+        med = spec_new.median(1,False).values[:,None]
+        med[med<1e-1] = 1e-1
+        
+        spec_new /= med
+        #print("median:",spec_new.median(1,False).min())
+        
+        if torch.isnan(spec_new).any():
+            nan_ind = torch.isnan(spec_new)
+            print("spec nan! z:", true_z[nan_ind], 
+                  "offset:",z_offset[nan_ind])
+            #exit()
+            
         end = begin+batch_size
         data.append([spec_new,w_new,z_new])
         batch_out[copy]={"param":record,"range":[begin,end]}
@@ -300,20 +335,22 @@ def latent_loss(model,spec,w,instrument,z,copy_info,nbatch,
     return loss+lambda_latent*loss_lat
 
 def robust_loss(model,spec,w,instrument,z,copy_info,nbatch):
-        
-    batch_copy = load_batch(*copy_info)
     
+    batch_copy = load_batch(*copy_info)
     batch_copy = accelerator.prepare(batch_copy)
     
     spec_copy,w_copy,z_copy = batch_copy["batch"]
     
     # encode the truncated mock data, super-sampled 
+    #w_copy = None
+    print("spec_copy:",spec_copy.shape)
     s = model.encode(spec_copy, w=w_copy)
+    
     spec_rest = model.decoder.decode(s)
     
      # variations of data copies
     loss = 0
-    for key in batch_copy:
+    for key in batch_copy:        
         if type(key)==str: continue
 
         begin,end = batch_copy[key]["range"]
@@ -329,6 +366,15 @@ def robust_loss(model,spec,w,instrument,z,copy_info,nbatch):
     
     if debug:
         print("loss_copy:",loss.item())
+        if torch.isnan(loss):
+            loss_ind = model._loss(spec, w, spec_new, individual=True)
+            
+            nan_ind = torch.isnan(loss_ind)
+            spec_nan = spec_new[nan_ind]
+            
+            print("loss is nan!", copy_info)
+            print("\n nan:",z_copy[nan_ind],spec_nan.max(),spec_nan.min())
+            exit() 
 
     return loss
 
@@ -389,21 +435,27 @@ def train(models, accelerator, instruments, trainloaders,
                 print("[batch %d/%d]: begin"%(k,nbatch))
                 mem_report()
                 
+                # ignore weight?
                 loss = models[which].loss(spec,w,instruments[which],z=z)
+                
+                #spectrum_observed = models[which].forward(spec, w=None, instrument=instruments[which], z=z)
+                #loss = models[which]._loss(spec, w, spectrum_observed)
                 print("loss_spec:",loss.item())
                 scaler.scale(loss).backward()
+                
                 
                 # back-propagation!!
                 with torch.cuda.amp.autocast(enabled=fp16):
                     args = (models[which],spec,w,instruments[which],
                             z,(k,data_file[which]),nbatch)
                     copy_loss = robust_loss(*args)
-                    
+                    #copy_loss = loss
                 # NEW
                 scaler.scale(copy_loss).backward()
+                
                 mem_report()
                 #accelerator.backward(loss)
-                train_loss += (loss.item()+copy_loss.item())
+                train_loss += 0.5*(loss.item()+copy_loss.item())
 
             train_loss /= (len(trainloaders[which].dataset))
             loss_ep[n_encoder*which] = train_loss
@@ -427,14 +479,16 @@ def train(models, accelerator, instruments, trainloaders,
                     spec, w, z = batch
                     
                     loss = models[which].loss(spec,w, instruments[which],z=z)
-                    valid_loss += loss.item()
+                    
                     
                     with torch.cuda.amp.autocast(enabled=fp16):
                         args = (models[which],spec,w,instruments[which],
                                 z,(k,data_file[which],"valid"),nbatch)
                         copy_loss = robust_loss(*args)
                     
-                    valid_loss += copy_loss.item()
+                    valid_loss += 0.5*(loss.item()+copy_loss.item())
+                    
+                    
                 valid_loss /= (len(validloaders[which].dataset))
                 
                 loss_ep[n_encoder*which+1] = valid_loss
@@ -470,9 +524,7 @@ wave_rest = torch.linspace(lmbda_min, lmbda_max, bins, dtype=torch.float32)
 #print ("Observed frame:\t{:.0f} .. {:.0f} A ({} bins)".format(wave_obs.min(), wave_obs.max(), len(wave_obs)))
 print ("Restframe:\t{:.0f} .. {:.0f} A ({} bins)".format(lmbda_min, lmbda_max, bins))
 
-
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
 print("torch.cuda.device_count():",torch.cuda.device_count())
 
 if "new" in sys.argv: 
@@ -487,16 +539,12 @@ if "new" in sys.argv:
         model_i = SpectrumAutoencoder(wave_rest,
                                       n_latent=n_latent,
                                       n_hidden=n_hidden,
-                                      K=16)
+                                      K=model_K,
+                                      n_redundant=n_redundant)
         model.append(model_i)
     # reuse decoder
     if len(model)==2:model[1].decoder = model[0].decoder
     instruments = [None]*n_encoder
-    
-    #initialization
-    #train_copy = [{},{}]
-    #valid_copy = [{},{}]
-    
     
 else: 
     
@@ -505,42 +553,19 @@ else:
     instruments = list(models[n_encoder:])
     
     loss  = [list(ll) for ll in loss]
-    lr = 1e-4
+    lr = 1e-5
 
 SDSS_id, BOSS_id =  boss_sdss_id()
 data_ids =  [SDSS_id, BOSS_id]
 n_ids, n_dim = len(data_ids[0]),10
 
-batch_size=512#2048
+batch_size=512
 
 trainloaders=[]
 validloaders=[]
 
 accelerator = Accelerator()
 
-import io
-class CPU_Unpickler(pickle.Unpickler):
-    def find_class(self, module, name):
-        if module == 'torch.storage' and name == '_load_from_bytes':
-            return lambda b: torch.load(io.BytesIO(b), map_location='cpu')
-        else: return super().find_class(module, name)
-
-def load_batch(k,data_file,mode="train"):
-    dataname = os.path.basename(data_file).split(".")[0]
-    batch_name = "[%s]%s-%s-%d.pkl"%(bat_prefix,dataname,mode,k)
-    
-    with open("%s/%s"%(dynamic_dir,batch_name), 'rb') as f:
-        if torch.cuda.is_available():batch_copy = pickle.load(f)
-        else:batch_copy = CPU_Unpickler(f).load()
-    return batch_copy
-
-def save_batch(batch_copy,k,data_file,mode="train"):
-    dataname = os.path.basename(data_file).split(".")[0]
-    batch_name = "[%s]%s-%s-%d.pkl"%(bat_prefix,dataname,mode,k)
-    with open("%s/%s"%(dynamic_dir,batch_name), 'wb') as f:
-        pickle.dump(batch_copy,f)
-    print("Saving to %s/%s.."%(dynamic_dir,batch_name))
-    return
 
 for j in range(len(data_file)):
     if skip[j]:continue
@@ -582,8 +607,8 @@ for j in range(len(data_file)):
     if copy_exists:continue
     
     # prepare copies!!!
-    uniform_njit = [200,1000]
-    params = [[0.2,uniform_njit]]#,[0.1,uniform_njit]]
+    uniform_njit = [100,300]
+    params = [[0.4,uniform_njit]]#,[0.1,uniform_njit]]
     ncopy = len(params)
 
     for k, batch in enumerate(trainloader):
@@ -606,7 +631,7 @@ for j in range(len(data_file)):
         tb = time.time()
                     
 
-#n_model = 5
+
 n_epoch = sum([item['iteration'] for item in train_sequence])
 
 print ("--- Model %d"%model_k)
@@ -618,4 +643,3 @@ train(model, accelerator, instruments, trainloaders,
       label=label+f".{model_k}", lr=lr)
 
 print("--- %s seconds ---" % (time.time()-init_t))
-exit()
