@@ -18,11 +18,9 @@ from accelerate import Accelerator
 from model import *
 
 
-# load data, specify GPU to prevent copying later
-# TODO: use torch.cuda.amp.autocast() for FP16/BF16 typcast
+# load data, specify device to prevent copying later
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # TODO: need dynamic data loader if we use larger data sets
-device = torch.device(type='cuda', index=0)
-
 data = load_data(filename, which="train", device=device)
 valid_data = load_data(filename, which="valid", device=device)
 
@@ -55,6 +53,7 @@ def train(model, accelerator, instrument, trainloader, validloader, n_epoch=200,
     optimizer = optim.Adam(model.parameters(), lr=lr)
     scheduler = optim.lr_scheduler.OneCycleLR(optimizer, lr, total_steps=n_epoch)
     model, optimizer = accelerator.prepare(model, optimizer)
+    #scaler = torch.cuda.amp.GradScaler()
     
     losses = []
     for epoch in range(n_epoch):
@@ -97,9 +96,8 @@ label = "model.series.test"
 n_epoch = 400
 
 
-accelerator = Accelerator()
+accelerator = Accelerator(mixed_precision='fp16')
 trainloader, validloader, sdss = accelerator.prepare(trainloader, validloader, sdss)
-
 
 for i in range(n_model):
     model = SpectrumAutoencoder(
