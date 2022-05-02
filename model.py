@@ -188,14 +188,36 @@ class RedshiftPrior(nn.Module):
         return z_
 
 
+#### Simple MLP ####    
+class MLP(nn.Module):
+    def __init__(self,
+                 n_in,
+                 n_out,
+                 n_hidden=(16, 16, 16),
+                 dropout=0):
+        super(MLP, self).__init__()
+        
+        layer = []
+        n_ = [n_in, *n_hidden, n_out]
+        for i in range(len(n_)-1):
+                layer.append(nn.Linear(n_[i], n_[i+1]))
+                layer.append(nn.LeakyReLU())
+                layer.append(nn.Dropout(p=dropout))
+        self.mlp = nn.Sequential(*layer)
+
+    def forward(self, x):
+        return self.mlp(x)
+    
+    
 #### Spectrum encoder    ####
 #### based on Serra 2018 ####
 #### with robust feature combination from Geisler 2020 ####
 class SpectrumEncoder(nn.Module):
-    def __init__(self, n_latent, K=16, n_redundant=2, T=0.5, dropout=0):
+    def __init__(self, n_latent, n_hidden=(128, 64, 32), dropout=0):
+        
         super(SpectrumEncoder, self).__init__()
         self.n_latent = n_latent
-        self.n_redundant = n_redundant
+        
         # spectrum convolutions
         filters = [128, 256, 512]
         sizes = [5, 11, 21]
@@ -206,19 +228,13 @@ class SpectrumEncoder(nn.Module):
         self.conv1w, self.conv2w, self.conv3w = self._conv_blocks(filters, sizes, dropout=dropout)
         self.n_feature = filters[-1]
 
-        permut = permute_indices(self.n_feature,self.n_redundant)
-        self.permut = permut
-        
         # pools and softmax work for spectra and weights
         self.pool1, self.pool2 = tuple(nn.MaxPool1d(s, padding=s//2) for s in sizes[:2])
         self.softmax = nn.Softmax(dim=-1)
 
-        # construct K independent linear estimators of latents for robust estimation
-        assert self.n_feature % K == 0, "K must be integer factor of %d" % self.n_feature
-        assert self.n_redundant*self.n_feature // K >= self.n_latent, "K must not be larger than %d" % (self.n_redundant*self.n_feature // self.n_latent)
-        self.K = K
-        self._W = nn.Parameter(torch.Tensor(1, self.K, self.n_latent, self.n_feature*self.n_redundant // K))
-        self.T = T
+        # small MLP to go from CNN features + redshift to latents
+        self.mlp = MLP(self.n_feature + 1, self.n_latent, n_hidden=n_hidden, dropout=dropout)
+        
 
     def _conv_blocks(self, filters, sizes, dropout=0):
         convs = []
@@ -238,7 +254,7 @@ class SpectrumEncoder(nn.Module):
             convs.append(nn.Sequential(conv, norm, act, drop))
         return tuple(convs)
 
-    def forward(self, x, w=None):
+    def forward(self, x, w=None, z=None):
         N, D = x.shape
         # spectrum compression
         x = x.unsqueeze(1)
@@ -262,15 +278,13 @@ class SpectrumEncoder(nn.Module):
         a = self.softmax(a * aw)
         # apply attention
         x = torch.sum(h * a, dim=2)
-        # linear map of features
         
-        # randomly assign each feature multiple times
-        x = x[:,self.permut]
-        
-        # split into K independent estimators of latents
-        x = torch.matmul(self._W, x.reshape(N, self.K, self.n_redundant*self.n_feature // self.K, 1)).squeeze(-1)
-        # robust combination with soft medoid
-        x = soft_weighted_medoid(x, temperature=self.T)
+        # redshift depending feature combination to final latents
+        if z is None:
+            z = torch.zeros(len(x))
+        assert len(x) == len(z)
+        x = torch.concat((x, z.unsqueeze(-1)), dim=-1)
+        x = self.mlp(x)
         return x
 
     @property
@@ -280,41 +294,21 @@ class SpectrumEncoder(nn.Module):
 
 #### Spectrum decoder ####
 #### Simple MLP but with explicit redshift and instrument path ####
-class Decoder(nn.Module):
-    def __init__(self,
-                 n_feature,
-                 n_latent,
-                 n_hidden=[128, 64, 32],
-                 dropout=0):
-        super(Decoder, self).__init__()
-        self.n_latent = n_latent
-        self.n_feature = n_feature
-
-        layer = []
-        n_hidden = [n_latent, *(n_hidden[::-1]), n_feature]
-        for i in range(len(n_hidden)-1):
-                layer.append(nn.Linear(n_hidden[i], n_hidden[i+1]))
-                layer.append(nn.LeakyReLU())
-                layer.append(nn.Dropout(p=dropout))
-        self.decoder = nn.Sequential(*layer)
-
-    def forward(self, x):
-        x = self.decoder(x)
-        return x
-
-class SpectrumDecoder(Decoder):
+class SpectrumDecoder(MLP):
     def __init__(self,
                  wave_rest,
                  n_latent=5,
-                 n_hidden=[128, 64, 32],
+                 n_hidden=(64, 256, 1024),
                  dropout=0):
 
         super(SpectrumDecoder, self).__init__(
-            len(wave_rest),
             n_latent,
+            len(wave_rest),
             n_hidden=n_hidden,
             dropout=dropout,
             )
+        
+        self.n_latent = n_latent
 
         # register wavelength tensors on the same device as the entire model
         self.register_buffer('wave_rest', wave_rest)
@@ -322,11 +316,11 @@ class SpectrumDecoder(Decoder):
     def decode(self, s):
         return super().forward(s)
 
-    def forward(self, s, instrument=None, z=0):
+    def forward(self, s, instrument=None, z=None):
         # restframe
         spectrum = self.decode(s)
         # observed frame
-        if instrument is not None or z != 0:
+        if instrument is not None or z is not None:
             spectrum = self.transform(spectrum, instrument=instrument, z=z)
         return spectrum
 
@@ -366,23 +360,23 @@ class BaseAutoencoder(nn.Module):
         self.encoder = encoder
         self.decoder = decoder
 
-    def encode(self, x, w=None):
-        return self.encoder(x, w=w)
+    def encode(self, x, w=None, z=0):
+        return self.encoder(x, w=w, z=z)
 
     def decode(self, x):
         return self.decoder(x)
 
-    def _forward(self, x, w=None, instrument=None, z=0):
-        s = self.encode(x, w=w)
-        spectrum_restframe = self.decoder.decode(s)
+    def _forward(self, x, w=None, instrument=None, z=None):
+        s = self.encode(x, w=w, z=z)
+        spectrum_restframe = self.decode(s)
         spectrum_observed = self.decoder.transform(spectrum_restframe, instrument=instrument, z=z)
         return s, spectrum_restframe, spectrum_observed
 
-    def forward(self, x, w=None, instrument=None, z=0):
+    def forward(self, x, w=None, instrument=None, z=None):
         s, spectrum_restframe, spectrum_observed = self._forward(x, w=w,  instrument=instrument, z=z)
         return spectrum_observed
 
-    def loss(self, x, w, instrument=None, z=0, individual=False):
+    def loss(self, x, w, instrument=None, z=None, individual=False):
         spectrum_observed = self.forward(x, w=w, instrument=instrument, z=z)
         return self._loss(x, w, spectrum_observed, individual=individual)
 
@@ -407,15 +401,14 @@ class SpectrumAutoencoder(BaseAutoencoder):
     def __init__(self,
                  wave_rest,
                  n_latent=10,
-                 n_hidden=(1024, 256, 64),
+                 n_hidden=(64, 256, 1024),
                  K=16,
                  n_redundant=2,
                  T=0.5,
                  dropout=0,
                 ):
 
-        encoder = SpectrumEncoder(n_latent, K=K, n_redundant=n_redundant,
-                                  T=T, dropout=dropout)
+        encoder = SpectrumEncoder(n_latent, dropout=dropout)
 
         decoder = SpectrumDecoder(
             wave_rest,

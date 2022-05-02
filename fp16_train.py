@@ -532,7 +532,7 @@ if "new" in sys.argv:
     loss = []
     lr = 1e-3
     n_latent = 10
-    n_hidden = (1024, 256, 64)
+    n_hidden = (64, 256, 1024)
 
     for i in range(n_encoder):
         if skip[i]:continue
