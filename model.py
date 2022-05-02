@@ -91,21 +91,17 @@ def load_data(path, which=None, device=None):
     # get normalization
     norm = get_norm(y)
 
-    w = ivar * ~mask * (norm**2)[:,None]
+    w = ivar * ~mask
     sel = np.any(w > 0, axis=1)   # remove all spectra that have all zero weights
     sel &= (norm > 0) & (z < 0.5)   # plus noisy ones and redshift outliers
-
-    w = np.maximum(w, 1e-6)       # avoid zero weights for logL normalization
     w = w[sel]
-    y = y[sel] / norm[sel, None]
+    y = y[sel]
     z = z[sel]
     zerr = zerr[sel]
     norm = norm[sel]
     id = np.array(id)[sel]
 
-
     print (f"Loading {len(y)} spectra (which = {which})")
-
     y = torch.tensor(y, dtype=torch.float32, device=device)
     w = torch.tensor(w, dtype=torch.float32, device=device)
     z = torch.tensor(z, dtype=torch.float32, device=device)
@@ -370,6 +366,7 @@ class BaseAutoencoder(nn.Module):
         s = self.encode(x, w=w, z=z)
         spectrum_restframe = self.decode(s)
         spectrum_observed = self.decoder.transform(spectrum_restframe, instrument=instrument, z=z)
+        spectrum_observed = self._unnormalize(x, spectrum_observed, w=w)
         return s, spectrum_restframe, spectrum_observed
 
     def forward(self, x, w=None, instrument=None, z=None):
@@ -391,6 +388,14 @@ class BaseAutoencoder(nn.Module):
             return loss_ind / D
 
         return torch.sum(loss_ind / D)
+    
+    def _unnormalize(self, x, m, w=None):
+        # apply constant factor that minimizes (c*m - x)^2
+        if w is None:
+            w = 1
+        mw = m*w
+        c = (mw * x).sum(dim=-1) / (mw * w).sum(dim=-1)
+        return m * c.unsqueeze(-1)
 
     @property
     def n_parameters(self):
