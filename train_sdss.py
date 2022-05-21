@@ -14,8 +14,8 @@ from torch import nn
 from torch import optim
 from accelerate import Accelerator
 
-
-from model import *
+from model import SpectrumAutoencoder, Instrument
+from util import load_data
 
 # load data, specify device to prevent copying later
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -47,11 +47,11 @@ print ("Observed frame:\t{:.0f} .. {:.0f} A ({} bins)".format(wave_obs.min(), wa
 print ("Restframe:\t{:.0f} .. {:.0f} A ({} bins)".format(lmbda_min, lmbda_max, bins))
 
 def train(model, accelerator, instrument, trainloader, validloader, n_epoch=200, label="", silent=False, lr=3e-4):
-    
+
     optimizer = optim.Adam(model.parameters(), lr=lr)
     scheduler = optim.lr_scheduler.OneCycleLR(optimizer, lr, total_steps=n_epoch)
     model, optimizer = accelerator.prepare(model, optimizer)
-    
+
     losses = []
     for epoch in range(n_epoch):
         model.train()
@@ -61,8 +61,8 @@ def train(model, accelerator, instrument, trainloader, validloader, n_epoch=200,
             optimizer.zero_grad()
             loss = model.loss(spec, w, instrument=instrument, z=z)
             accelerator.backward(loss)
-            train_loss += loss.item() 
-            optimizer.step()        
+            train_loss += loss.item()
+            optimizer.step()
         train_loss /= len(trainloader.dataset)
 
         with torch.no_grad():
@@ -77,7 +77,7 @@ def train(model, accelerator, instrument, trainloader, validloader, n_epoch=200,
         scheduler.step()
         losses.append((train_loss, valid_loss))
 
-        if epoch % 20 == 0 or epoch == n_epoch - 1:           
+        if epoch % 20 == 0 or epoch == n_epoch - 1:
             if not silent:
                 print('====> Epoch: %i TRAINING Loss: %.2e VALIDATION Loss: %.2e' % (epoch, train_loss, valid_loss))
 
@@ -103,4 +103,3 @@ for i in range(n_model):
     print (f"--- Model {i}/{n_model}")
 
     train(model, accelerator, sdss, trainloader, validloader, n_epoch=n_epoch, label=label+f".{i}", lr=1e-3)
-
