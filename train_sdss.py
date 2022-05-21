@@ -17,10 +17,8 @@ from accelerate import Accelerator
 
 from model import *
 
-
 # load data, specify device to prevent copying later
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-# TODO: need dynamic data loader if we use larger data sets
 data = load_data(filename, which="train", device=device)
 valid_data = load_data(filename, which="valid", device=device)
 
@@ -53,7 +51,6 @@ def train(model, accelerator, instrument, trainloader, validloader, n_epoch=200,
     optimizer = optim.Adam(model.parameters(), lr=lr)
     scheduler = optim.lr_scheduler.OneCycleLR(optimizer, lr, total_steps=n_epoch)
     model, optimizer = accelerator.prepare(model, optimizer)
-    #scaler = torch.cuda.amp.GradScaler()
     
     losses = []
     for epoch in range(n_epoch):
@@ -91,7 +88,6 @@ def train(model, accelerator, instrument, trainloader, validloader, n_epoch=200,
 
 n_latent = 10
 n_model = 5
-
 label = "model.series.test"
 n_epoch = 400
 
