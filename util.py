@@ -74,7 +74,7 @@ def load_data(path, which=None, device=None):
           "test": slice(n_train+n_valid, n_train+n_valid+n_test),
          }
     sl = sl[which]
-    
+
     y = data['spectra'][sl]
     wave = 10**data['wave']
     z = data['z'][sl]
@@ -85,7 +85,7 @@ def load_data(path, which=None, device=None):
     # SDSS IDs
     plates, mjds, fibers = data['plate'][sl], data['mjd'][sl], data['fiber'][sl]
     id = [f"{plate}-{mjd}-{fiber}" for plate, mjd, fiber in zip(plates, mjds, fibers)]
-    
+
     # get normalization
     norm = get_norm(y)
 
@@ -155,10 +155,10 @@ def load_models(label, n_config):
 
 def augment_batch(batch, how="mask", wave_obs=None):
     assert how in ["mask", "redshift"]
-    
+
     spec, w, z = batch
     N, L = spec.shape
-    
+
     if how == "mask":
         # randomly mask ~1000 bins
         delta = np.random.randint(500, 1500, N)
@@ -170,15 +170,15 @@ def augment_batch(batch, how="mask", wave_obs=None):
             new_spec[i,start[i]:end[i]] = 0
             new_w[i,start[i]:end[i]] = 0
         return new_spec, new_w, z
-    
+
     if how == "redshift":
         assert wave_obs is not None
         z_max = 0.5
-        z_new = torch.rand(N) * z_max
-        
+        z_new = torch.rand(N).to(z.device) * z_max
+
         # apply inverse of redshift correction
         zfactor = ((1+z_new)/(1+z)).unsqueeze(1)
-        
+
         # redshift linear interpolation
         spec_new = Interp1d()(wave_obs*zfactor, spec, wave_obs)
         w_new = Interp1d()(wave_obs*zfactor, w, wave_obs)

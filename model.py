@@ -131,7 +131,7 @@ class SpectrumEncoder(nn.Module):
         if z is None:
             z = torch.zeros(len(x))
         assert len(x) == len(z)
-        x = torch.concat((x, z.unsqueeze(-1)), dim=-1)
+        x = torch.cat((x, z.unsqueeze(-1)), dim=-1)
         x = self.mlp(x)
         return x
 
@@ -302,7 +302,7 @@ class Instrument(nn.Module):
         wave_kernel_rest = torch.arange(wave_kernel.min().floor(), wave_kernel.max().ceil(), h)
         # make sure kernel has odd length for padding 'same'
         if len(wave_kernel_rest) % 2 == 0:
-            wave_kernel_rest = torch.concat((wave_kernel_rest, torch.tensor([wave_kernel_rest.max() + h,])), 0)
+            wave_kernel_rest = torch.cat((wave_kernel_rest, torch.tensor([wave_kernel_rest.max() + h,])), 0)
         lsf_kernel_rest = Interp1d()(wave_kernel, lsf_kernel, wave_kernel_rest)
         lsf_kernel_rest /= lsf_kernel_rest.sum()
 
