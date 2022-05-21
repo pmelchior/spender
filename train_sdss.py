@@ -60,9 +60,9 @@ def train(model, accelerator, instrument, trainloader, validloader, n_epoch=200,
         train_loss = 0.
         for batch in trainloader:
             spec, w, z = batch
-            # loss = model.loss(spec, w, instrument=instrument, z=z)
-            # accelerator.backward(loss)
-            # train_loss += loss.item()
+            loss = model.loss(spec, w, instrument=instrument, z=z)
+            accelerator.backward(loss)
+            train_loss += loss.item()
 
             if augmented:
                 options = ["redshift", "mask"]
