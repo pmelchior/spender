@@ -49,7 +49,7 @@ print ("Restframe:\t{:.0f} .. {:.0f} A ({} bins)".format(lmbda_min, lmbda_max, b
 def train(model, accelerator, instrument, trainloader, validloader, n_epoch=200, label="", silent=False, lr=3e-4, augmented=False):
 
     assert augmented in [True, False, "redshift", "mask"]
-    
+
     optimizer = optim.Adam(model.parameters(), lr=lr)
     scheduler = optim.lr_scheduler.OneCycleLR(optimizer, lr, total_steps=n_epoch)
     model, optimizer = accelerator.prepare(model, optimizer)
@@ -60,9 +60,9 @@ def train(model, accelerator, instrument, trainloader, validloader, n_epoch=200,
         train_loss = 0.
         for batch in trainloader:
             spec, w, z = batch
-            loss = model.loss(spec, w, instrument=instrument, z=z)
-            accelerator.backward(loss)
-            train_loss += loss.item()
+            # loss = model.loss(spec, w, instrument=instrument, z=z)
+            # accelerator.backward(loss)
+            # train_loss += loss.item()
 
             if augmented:
                 options = ["redshift", "mask"]
@@ -71,15 +71,14 @@ def train(model, accelerator, instrument, trainloader, validloader, n_epoch=200,
                 else:
                     how = options[np.random.randint(2)] # select augmentation type at random
                 spec_, w_, z_ = augment_batch(batch, how=how, wave_obs=instrument.wave_obs)
-                
+
                 # encode augmented data
-                s = model.encode(spec_, w=w_, z=z_)
+                s_ = model.encode(spec_, w=w_, z=z_)
                 # but compute loss of decoded result against original (including redshift)
-                spectrum_restframe = model.decode(s)
-                spectrum_observed = model.decoder.transform(spectrum_restframe, instrument=instrument, z=z)
+                _, _, spectrum_observed = model._forward(None, s=s_, instrument=instrument, z=z)
                 loss =  model._loss(spec, w, spectrum_observed)
                 accelerator.backward(loss)
-            
+
             optimizer.step()
             optimizer.zero_grad()
         train_loss /= len(trainloader.dataset)

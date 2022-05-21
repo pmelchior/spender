@@ -214,8 +214,9 @@ class BaseAutoencoder(nn.Module):
     def decode(self, x):
         return self.decoder(x)
 
-    def _forward(self, x, w=None, instrument=None, z=None):
-        s = self.encode(x, w=w, z=z)
+    def _forward(self, x, w=None, instrument=None, z=None, s=None):
+        if s is None:
+            s = self.encode(x, w=w, z=z)
         spectrum_restframe = self.decode(s)
         spectrum_observed = self.decoder.transform(spectrum_restframe, instrument=instrument, z=z)
         spectrum_observed = self._unnormalize(x, spectrum_observed, w=w)
