@@ -14,13 +14,11 @@ from torch import nn
 from torch import optim
 from accelerate import Accelerator
 
-
-from model import *
-
+from model import SpectrumAutoencoder, Instrument
+from util import load_data, augment_batch
 
 # load data, specify device to prevent copying later
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-# TODO: need dynamic data loader if we use larger data sets
 data = load_data(filename, which="train", device=device)
 valid_data = load_data(filename, which="valid", device=device)
 
@@ -48,24 +46,42 @@ wave_rest = torch.linspace(lmbda_min, lmbda_max, bins, dtype=torch.float32)
 print ("Observed frame:\t{:.0f} .. {:.0f} A ({} bins)".format(wave_obs.min(), wave_obs.max(), len(wave_obs)))
 print ("Restframe:\t{:.0f} .. {:.0f} A ({} bins)".format(lmbda_min, lmbda_max, bins))
 
-def train(model, accelerator, instrument, trainloader, validloader, n_epoch=200, label="", silent=False, lr=3e-4):
+def train(model, accelerator, instrument, trainloader, validloader, n_epoch=200, label="", silent=False, lr=3e-4, augmented=False):
+
+    assert augmented in [True, False, "redshift", "mask"]
     
     optimizer = optim.Adam(model.parameters(), lr=lr)
     scheduler = optim.lr_scheduler.OneCycleLR(optimizer, lr, total_steps=n_epoch)
     model, optimizer = accelerator.prepare(model, optimizer)
-    #scaler = torch.cuda.amp.GradScaler()
-    
+
     losses = []
     for epoch in range(n_epoch):
         model.train()
         train_loss = 0.
         for batch in trainloader:
             spec, w, z = batch
-            optimizer.zero_grad()
             loss = model.loss(spec, w, instrument=instrument, z=z)
             accelerator.backward(loss)
-            train_loss += loss.item() 
-            optimizer.step()        
+            train_loss += loss.item()
+
+            if augmented:
+                options = ["redshift", "mask"]
+                if augmented in options:
+                    how = augmented
+                else:
+                    how = options[np.random.randint(2)] # select augmentation type at random
+                spec_, w_, z_ = augment_batch(batch, how=how, wave_obs=instrument.wave_obs)
+                
+                # encode augmented data
+                s = model.encode(spec_, w=w_, z=z_)
+                # but compute loss of decoded result against original (including redshift)
+                spectrum_restframe = model.decode(s)
+                spectrum_observed = model.decoder.transform(spectrum_restframe, instrument=instrument, z=z)
+                loss =  model._loss(spec, w, spectrum_observed)
+                accelerator.backward(loss)
+            
+            optimizer.step()
+            optimizer.zero_grad()
         train_loss /= len(trainloader.dataset)
 
         with torch.no_grad():
@@ -80,7 +96,7 @@ def train(model, accelerator, instrument, trainloader, validloader, n_epoch=200,
         scheduler.step()
         losses.append((train_loss, valid_loss))
 
-        if epoch % 20 == 0 or epoch == n_epoch - 1:           
+        if epoch % 20 == 0 or epoch == n_epoch - 1:
             if not silent:
                 print('====> Epoch: %i TRAINING Loss: %.2e VALIDATION Loss: %.2e' % (epoch, train_loss, valid_loss))
 
@@ -91,7 +107,6 @@ def train(model, accelerator, instrument, trainloader, validloader, n_epoch=200,
 
 n_latent = 10
 n_model = 5
-
 label = "model.series.test"
 n_epoch = 400
 
@@ -106,5 +121,4 @@ for i in range(n_model):
     )
     print (f"--- Model {i}/{n_model}")
 
-    train(model, accelerator, sdss, trainloader, validloader, n_epoch=n_epoch, label=label+f".{i}", lr=1e-3)
-
+    train(model, accelerator, sdss, trainloader, validloader, n_epoch=n_epoch, label=label+f".{i}", lr=1e-3, augmented=True)
