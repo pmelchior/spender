@@ -91,11 +91,11 @@ def load_data(path, which=None, device=None):
     # get normalization
     norm = get_norm(y)
 
-    w = ivar * ~mask
-    sel = np.any(w > 0, axis=1)   # remove all spectra that have all zero weights
+    w = ivar * ~mask * (norm**2)[:,None] # normalization
+    sel = np.any(w > 0, axis=1)     # remove all spectra that have all zero weights
     sel &= (norm > 0) & (z < 0.5)   # plus noisy ones and redshift outliers
     w = w[sel]
-    y = y[sel]
+    y = y[sel] / norm[sel, None]    # normalization
     z = z[sel]
     zerr = zerr[sel]
     norm = norm[sel]
