@@ -13,8 +13,10 @@ from torch.distributions.normal import Normal
 from torchinterp1d import Interp1d
 
 from utils import *
-from model import *
+from model import SpectrumAutoencoder, Instrument, load_data
+import accelerate
 from accelerate import Accelerator
+
 #from memory_profiler import profile
 import humanize,psutil,GPUtil
 
@@ -23,50 +25,53 @@ data_dir = "/scratch/gpfs/yanliang"
 dynamic_dir = "/scratch/gpfs/yanliang/dynamic-data"
 savemodel = "models"
 
+data_file = ["%s/sdssrand_N74000_spectra.npz"%(data_dir),
+             "%s/bossrand_N74000_spectra.npz"%(data_dir)]
+
+#data_file = ["%s/sdssrand_N24000_spectra.npz"%(data_dir),
+#             "%s/bossrand_N44000_spectra.npz"%(data_dir)]
+
 #data_file = ["%s/cutted-sdss_spectra.npz"%(data_dir),
 #             "%s/boss-20k_spectra.npz"%(data_dir)]
 
-data_file = ["%s/joint-sdss_spectra.npz"%(data_dir),
-             "%s/joint-boss_spectra.npz"%(data_dir)]
+#data_file = ["%s/joint-sdss_spectra.npz"%(data_dir),
+#             "%s/joint-boss_spectra.npz"%(data_dir)]
 
-encoder_names = ["sdss"]#,"boss"]
+encoder_names = ["sdss","boss"]
 n_encoder = len(encoder_names)
-skip=[False,True]
+skip=[False,False]
 
 debug = False
-bat_prefix = "normalized"#"randz"
-copy_exists = True
-#calib_active = [False,True]
+bat_prefix = "mix"#"normalized"
+copy_exists = True #calib_active = [False,True]
+code = "v2"
+n_latent = 2
 
 SED = {"data":[True,False], "decoder":True}
+BED = {"data":[False,True], "decoder":True}
+SE = {"data":[True,False], "decoder":False}
 BE = {"data":[False,True], "decoder":False}
 D = {"data":[True,True],"encoder":[False,False],"decoder":True}
 SEBE = {"data":[True,True], "decoder":False}
-#FULL = {"data":[True,True],"decoder":True}
-model_K = 32
-n_redundant = 3
+FULL = {"data":[True,True],"decoder":True}
 
-def prepare_train(seq,niter=800):
+def prepare_train(seq,niter=500):
     for d in seq:
         if not "iteration" in d:d["iteration"]=niter
         if not "encoder" in d:d.update({"encoder":d["data"]})
     return seq
 
-train_sequence=prepare_train([SED])
+train_sequence=prepare_train([FULL])
 if "debug" in sys.argv:debug=True
 
-model_k = 0
-#code = "sdss100k"
-code = "redundancy"
-
-label = "%s/robust-%s"%(savemodel,code)
+model_k = 13
+label = "%s/joint-%s"%(savemodel,code)
 #save_copy = "%s/robust-copy.%d.pt"%(savemodel,model_k)
 
 # model number
 # load from
-label_ = label+".%d"%model_k
-#label_ = "%s/robust-sdss100k.1"%savemodel
-#label_ = "%s/robust-%s.%d"%(savemodel,"test",5)
+#label_ = label+".%d"%model_k
+label_ = label+".4"
 
 class LogLinearDistribution():
     def __init__(self, a, bound):
@@ -124,20 +129,38 @@ def mem_report():
         print('GPU {:d} ... Mem Free: {:.0f}MB / {:.0f}MB | Utilization {:3.0f}%'.format(i, gpu.memoryFree, gpu.memoryTotal, gpu.memoryUtil*100))
     return
     
-def load_model(fileroot):
+def load_model(fileroot,n_latent=10):
     if not torch.cuda.is_available():
         device = torch.device('cpu')
     else:
         device = None
-
+    
     path = f'{fileroot}.pt'
+    print("path:",path)
     model = torch.load(path, map_location=device)
     if type(model)==list or type(model)==tuple:
         [m.eval() for m in model]
+    elif type(model)==dict:
+        mdict = model
+        print("states:",mdict.keys())
+
+        models = mdict["model"]
+        instruments = mdict["instrument"]
+        model = []
+        if "n_latent" in mdict:n_latent=mdict["n_latent"]
+        for m in models:
+            loadm = SpectrumAutoencoder(wave_rest,n_latent=n_latent)
+            loadm.load_state_dict(m)
+            loadm.eval()
+            model.append(loadm)
+            
+        for ins in instruments:
+            empty=Instrument(wave_obs=None, calibration=None)
+            model.append(empty)
+        
     else: model.eval()
     path = f'{fileroot}.losses.npy'
     loss = np.load(path)
-
     print (f"model {fileroot}: iterations {len(loss)}, final loss: {loss[-1]}")
     return model, loss
   
@@ -300,18 +323,20 @@ def get_all_parameters(models,instruments):
 def latent_loss(model,spec,w,instrument,z,copy_info,nbatch,
                 lambda_latent=1):
     
-    #with torch.cuda.amp.autocast():
     s,_,spectrum_observed = model._forward(spec, w, instrument, z)
     loss = model._loss(spec, w, spectrum_observed)
+    print("loss_spec:",loss.item())
+    batch_size,s_size = s.shape
     # load partial copies!!
     ratio = 1
     lambda_latent /= ratio
     if copy_info[0]/nbatch>ratio:return loss
 
     batch_copy = load_batch(*copy_info)
-    #batch_copy = accelerator.prepare(batch_copy)
+    batch_copy = accelerator.prepare(batch_copy)
+    
     spec_copy,w_copy,z_copy = batch_copy["batch"]
-    s_copy = model.encode(spec_copy,w_copy)
+    s_copy = model.encode(spec_copy,w_copy,z=torch.zeros_like(z_copy))
     
     if debug:
         print("spec:",spec[0].min(),spec[0].max())
@@ -326,7 +351,7 @@ def latent_loss(model,spec,w,instrument,z,copy_info,nbatch,
     for key in batch_copy:
         if type(key)==str: continue
         begin,end = batch_copy[key]["range"]
-        loss_lat += torch.sum((s_copy[begin:end]-s).pow(2))
+        loss_lat += torch.sum(((s_copy[begin:end]-s)/1e-1).pow(2))/s_size
     
     print("loss_lat: ",loss_lat.dtype)   
     
@@ -334,18 +359,22 @@ def latent_loss(model,spec,w,instrument,z,copy_info,nbatch,
     #exit()
     return loss+lambda_latent*loss_lat
 
-def robust_loss(model,spec,w,instrument,z,copy_info,nbatch):
+def robust_loss(model,spec,w,instrument,z,copy_info,nbatch,mask):
     
     batch_copy = load_batch(*copy_info)
     batch_copy = accelerator.prepare(batch_copy)
     
     spec_copy,w_copy,z_copy = batch_copy["batch"]
     
+    if mask != {}:
+        # "zero" weight for masked region
+        maskmat = mask["mask"].repeat(w_copy.shape[0],1)
+        w_copy[maskmat] = 1e-6
+    
     # encode the truncated mock data, super-sampled 
     #w_copy = None
-    print("spec_copy:",spec_copy.shape)
-    s = model.encode(spec_copy, w=w_copy)
-    
+    #print("spec_copy:",spec_copy.shape)
+    s = model.encode(spec_copy, w=w_copy, z=z_copy)
     spec_rest = model.decoder.decode(s)
     
      # variations of data copies
@@ -378,10 +407,55 @@ def robust_loss(model,spec,w,instrument,z,copy_info,nbatch):
 
     return loss
 
+
+def skylines_mask(waves,intensity_limit=2,radii=5,debug=True):
+    
+    f=open("sky-lines.txt","r")
+    content = f.readlines()
+    f.close()
+    
+    skylines = [[10*float(line.split()[0]),float(line.split()[1])] for line in content if not line[0]=="#" ]
+    skylines = np.array(skylines)
+    
+    n_lines = 0
+    mask = ~(waves>0)
+    
+    for line in skylines:
+        line_pos, intensity = line
+        if line_pos>waves.max():continue
+        if intensity<intensity_limit:continue
+        n_lines += 1
+        mask[(waves<(line_pos+radii))*(waves>(line_pos-radii))] = True
+
+    non_zero = torch.count_nonzero(mask)
+    if debug:print("number of lines: %d, fraction: %.2f"%(n_lines,non_zero/mask.shape[0]))
+    return mask
+
+def checkpoint(args,optimizer,scheduler,n_encoder,label):
+    unwrapped = [accelerator.unwrap_model(args_i).state_dict()\
+                 for args_i in args]
+
+    model_unwrapped = unwrapped[:n_encoder]
+    instruments_unwrapped = unwrapped[n_encoder:2*n_encoder]
+
+    # checkpoints
+    accelerator.save({
+        "model": model_unwrapped,
+        "instrument":instruments_unwrapped,
+        "optimizer": optimizer.optimizer.state_dict(),
+        # optimizer is an AcceleratedOptimizer object
+        "scaler": accelerator.scaler.state_dict(),
+        "scheduler": scheduler.state_dict(),
+        "n_latent":n_latent
+    },f'{label}.pt')
+    return
+    
 #@profile
 def train(models, accelerator, instruments, trainloaders, 
           validloaders, n_epoch=200, label="", losses = [],
-          silent=False, lr=1e-4, fp16=True):
+          silent=False, lr=1e-4, fp16=True, data_copy=True,
+          latent=False, per_epoch=False, 
+          mask_skyline=True):
     
     model_parameters,n_parameters = get_all_parameters(models,instruments)
     
@@ -389,13 +463,11 @@ def train(models, accelerator, instruments, trainloaders,
     mem_report()
     
     ladder = build_ladder(train_sequence)
-    
     optimizer = optim.Adam(model_parameters, lr=lr)
     scheduler = optim.lr_scheduler.OneCycleLR(optimizer, lr, 
                                               total_steps=n_epoch)
     # NEW
-    scaler = torch.cuda.amp.GradScaler()
-
+    #scaler = torch.cuda.amp.GradScaler()
     
     args = models + instruments + [optimizer]
     prepared = accelerator.prepare(*args)
@@ -403,7 +475,23 @@ def train(models, accelerator, instruments, trainloaders,
     instruments = prepared[n_encoder:2*n_encoder]
     optimizer = prepared[-1]
     
+    detailed_loss = {}
     
+    nwidth = max([len(trainloaders[j].dataset)//batch_size\
+                  for j in range(n_encoder)])
+    
+    if not "train" in detailed_loss:
+        detailed_loss["train"]=np.zeros((n_encoder,nwidth,n_epoch))
+    
+    
+    if mask_skyline:
+        mask_dicts = []
+        for which in range(n_encoder):
+            locmask = skylines_mask(instruments[which].wave_obs)
+            mask_dicts.append({"mask":locmask})
+    else: mask_dicts=[{}]*n_encoder
+                
+    optimizer.zero_grad()
     for epoch in range(n_epoch):
         
         loss_ep = np.zeros(4)
@@ -426,47 +514,76 @@ def train(models, accelerator, instruments, trainloaders,
             models[which].train()
             instruments[which].train()
             
+            
             train_loss = 0.
             nbatch = len(trainloaders[which].dataset)//batch_size
+
             for k,batch in enumerate(trainloaders[which]):
-                optimizer.zero_grad()
+
+                #optimizer.zero_grad()
                 spec, w, z = batch
 
+                if mask_skyline:
+                    # "zero" weight for masked region
+                    maskmat = mask_dicts[which]["mask"].repeat(w.shape[0],1)
+                    w[maskmat]=1e-6
+                
                 print("[batch %d/%d]: begin"%(k,nbatch))
                 mem_report()
-                
-                # ignore weight?
-                loss = models[which].loss(spec,w,instruments[which],z=z)
-                
-                #spectrum_observed = models[which].forward(spec, w=None, instrument=instruments[which], z=z)
-                #loss = models[which]._loss(spec, w, spectrum_observed)
-                print("loss_spec:",loss.item())
-                scaler.scale(loss).backward()
-                
-                
+  
                 # back-propagation!!
-                with torch.cuda.amp.autocast(enabled=fp16):
-                    args = (models[which],spec,w,instruments[which],
-                            z,(k,data_file[which]),nbatch)
+                #with torch.cuda.amp.autocast(enabled=fp16):
+
+                if not latent:
+                    loss = models[which].loss(spec,w,instruments[which],z=z)
+
+                    print("loss_spec:",loss.item())
+                    #scaler.scale(loss).backward()
+                    accelerator.backward(loss)
+                    
+                # skip mock data loss
+                if not data_copy: 
+                    train_loss += loss.item()
+                    if k<nbatch:detailed_loss["train"][which][k][epoch] = loss.item()
+                    if per_epoch:continue
+                    optimizer.step()
+                    optimizer.zero_grad()
+                    continue
+
+                args = (models[which],spec,w,instruments[which],
+                        z,(k,data_file[which]),nbatch,mask_dicts[which])
+
+                if latent: 
+                    copy_loss = latent_loss(*args)
+                    batch_loss = 0.5*copy_loss
+                else:
                     copy_loss = robust_loss(*args)
-                    #copy_loss = loss
-                # NEW
-                scaler.scale(copy_loss).backward()
+                    batch_loss = 0.5*(loss+copy_loss)
+                    #scaler.scale(copy_loss).backward()
+                    
+                train_loss += batch_loss.item()
+                
+                if k<nbatch:
+                    print("k:",k,"nbatch:",nbatch)
+                    detailed_loss["train"][which][k][epoch] = batch_loss.item()
                 
                 mem_report()
-                #accelerator.backward(loss)
-                train_loss += 0.5*(loss.item()+copy_loss.item())
-
+                accelerator.backward(copy_loss)  
+                
+                if per_epoch:continue
+                # once per batch
+                optimizer.step()
+                optimizer.zero_grad()
+            
             train_loss /= (len(trainloaders[which].dataset))
             loss_ep[n_encoder*which] = train_loss
         
-        # NEW
-        scaler.step(optimizer)
-        scaler.update()
-        
-        #optimizer.step()
+        if per_epoch:
+            # once per epoch
+            optimizer.step()
+            optimizer.zero_grad()
         scheduler.step()
-
+        
         with torch.no_grad():
             for which in range(n_encoder):
                 if skip[which]:continue
@@ -478,36 +595,41 @@ def train(models, accelerator, instruments, trainloaders,
                 for k,batch in enumerate(validloaders[which]):
                     spec, w, z = batch
                     
+                    if mask_skyline:
+                        # "zero" weight for masked region
+                        maskmat = mask_dicts[which]["mask"].repeat(w.shape[0],1)
+                        w[maskmat]=1e-6
+                    
+                    
+                    #with torch.cuda.amp.autocast(enabled=fp16):
                     loss = models[which].loss(spec,w, instruments[which],z=z)
-                    
-                    
-                    with torch.cuda.amp.autocast(enabled=fp16):
+                    if data_copy:
                         args = (models[which],spec,w,instruments[which],
-                                z,(k,data_file[which],"valid"),nbatch)
+                                z,(k,data_file[which],"valid"),nbatch,mask_dicts[which])
                         copy_loss = robust_loss(*args)
-                    
-                    valid_loss += 0.5*(loss.item()+copy_loss.item())
-                    
-                    
+                        valid_loss += 0.5*(loss.item()+copy_loss.item())
+                    else:valid_loss += loss.item()
                 valid_loss /= (len(validloaders[which].dataset))
                 
                 loss_ep[n_encoder*which+1] = valid_loss
                 if not mode['data'][which]:
                     loss_ep[n_encoder*which] = valid_loss
-            
         losses.append(loss_ep)
         
+        if not silent:
+            print('====> Epoch: %i TRAINING Loss: %.2e,%.2e VALIDATION Loss: %.2e,%.2e' % (epoch, loss_ep[0], loss_ep[2],  loss_ep[1], loss_ep[3]))
+        
+        
         if epoch % 10 == 0 or epoch == n_epoch - 1:           
-            if not silent:
-                print('====> Epoch: %i TRAINING Loss: %.2e,%.2e VALIDATION Loss: %.2e,%.2e' % (epoch, loss_ep[0], loss_ep[2],  loss_ep[1], loss_ep[3]))
-
-            save_loss = np.array(losses)
-            # checkpoints
-            torch.save(models+instruments, f'{label}.pt')
             
+            save_loss = np.array(losses)   
             np.save(f'{label}.losses.npy', save_loss)
+            np.save(f'{label}.detail.npy', detailed_loss["train"])
             
-            #return
+            #accelerator.save_state(f'{label}.pt')
+            #continue
+            args = models + instruments
+            checkpoint(args,optimizer,scheduler,n_encoder,label)
 
             
 # load data, specify GPU to prevent copying later
@@ -528,32 +650,35 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("torch.cuda.device_count():",torch.cuda.device_count())
 
 if "new" in sys.argv: 
-    model = []
+    models = []
     loss = []
     lr = 1e-3
-    n_latent = 10
     n_hidden = (64, 256, 1024)
 
     for i in range(n_encoder):
         if skip[i]:continue
         model_i = SpectrumAutoencoder(wave_rest,
                                       n_latent=n_latent,
-                                      n_hidden=n_hidden,
-                                      K=model_K,
-                                      n_redundant=n_redundant)
-        model.append(model_i)
+                                      n_hidden=n_hidden)
+        models.append(model_i)
     # reuse decoder
-    if len(model)==2:model[1].decoder = model[0].decoder
+    if len(models)==2:
+        print("Using the same decoder!!")
+        models[1].decoder = models[0].decoder
     instruments = [None]*n_encoder
     
 else: 
     
-    models, loss = load_model(label_)
-    model = list(models[:n_encoder])
+    models, loss = load_model(label_,n_latent=n_latent)
     instruments = list(models[n_encoder:])
+    models = list(models[:n_encoder])
     
+    if len(models)==2:
+        print("Using the same decoder!!")
+        models[1].decoder = models[0].decoder
+        
     loss  = [list(ll) for ll in loss]
-    lr = 1e-5
+    lr = 1e-4
 
 SDSS_id, BOSS_id =  boss_sdss_id()
 data_ids =  [SDSS_id, BOSS_id]
@@ -564,8 +689,8 @@ batch_size=512
 trainloaders=[]
 validloaders=[]
 
-accelerator = Accelerator()
-
+#accelerator = Accelerator()
+accelerator = Accelerator(mixed_precision='fp16')
 
 for j in range(len(data_file)):
     if skip[j]:continue
@@ -631,14 +756,12 @@ for j in range(len(data_file)):
         tb = time.time()
                     
 
-
 n_epoch = sum([item['iteration'] for item in train_sequence])
 
 print ("--- Model %d"%model_k)
 
 init_t = time.time()
-
-train(model, accelerator, instruments, trainloaders, 
+train(models, accelerator, instruments, trainloaders, 
       validloaders, n_epoch=n_epoch, losses = loss,
       label=label+f".{model_k}", lr=lr)
 
