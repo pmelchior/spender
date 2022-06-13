@@ -201,12 +201,14 @@ class BaseAutoencoder(nn.Module):
     def __init__(self,
                  encoder,
                  decoder,
+                 normalize=False,
                 ):
 
         super(BaseAutoencoder, self).__init__()
         assert encoder.n_latent == decoder.n_latent
         self.encoder = encoder
         self.decoder = decoder
+        self.normalize = normalize
 
     def encode(self, x, w=None, z=0):
         return self.encoder(x, w=w, z=z)
@@ -219,7 +221,8 @@ class BaseAutoencoder(nn.Module):
             s = self.encode(x, w=w, z=z)
         spectrum_restframe = self.decode(s)
         spectrum_observed = self.decoder.transform(spectrum_restframe, instrument=instrument, z=z)
-        spectrum_observed = self._unnormalize(x, spectrum_observed, w=w)
+        if self.normalize:
+            spectrum_observed = self._normalize(x, spectrum_observed, w=w)
         return s, spectrum_restframe, spectrum_observed
 
     def forward(self, x, w=None, instrument=None, z=None):
@@ -242,8 +245,8 @@ class BaseAutoencoder(nn.Module):
 
         return torch.sum(loss_ind / D)
 
-    def _unnormalize(self, x, m, w=None):
-        # apply constant factor that minimizes (c*m - x)^2
+    def _normalize(self, x, m, w=None):
+        # apply constant factor c that minimizes (c*m - x)^2
         if w is None:
             w = 1
         mw = m*w
@@ -264,6 +267,7 @@ class SpectrumAutoencoder(BaseAutoencoder):
                  n_redundant=2,
                  T=0.5,
                  dropout=0,
+                 normalize=False,
                 ):
 
         encoder = SpectrumEncoder(n_latent, dropout=dropout)
@@ -278,6 +282,7 @@ class SpectrumAutoencoder(BaseAutoencoder):
         super(SpectrumAutoencoder, self).__init__(
             encoder,
             decoder,
+            normalize=normalize,
         )
 
 
