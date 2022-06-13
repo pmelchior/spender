@@ -117,6 +117,7 @@ for i in range(n_model):
     model = SpectrumAutoencoder(
             wave_rest,
             n_latent=n_latent,
+            normalize=True,
     )
     print (f"--- Model {i}/{n_model}")
 
