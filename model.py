@@ -1,159 +1,7 @@
 import numpy as np
 import torch
 from torch import nn
-import torch.nn.functional as F
-
 from torchinterp1d import Interp1d
-
-
-def get_norm(x):
-    # simple median as robust mean across the spectrum
-    norm = np.median(x, axis=1)
-    return norm
-
-def permute_indices(length,n_redundant=1):
-    wrap_indices = torch.arange(length).repeat(n_redundant)
-    rand_permut = wrap_indices[torch.randperm(length*n_redundant)]
-    return rand_permut
-
-# adapted from https://github.com/sigeisler/reliable_gnn_via_robust_aggregation/
-def _distance_matrix(x, eps_factor=1e2):
-    """Naive dense distance matrix calculation.
-
-    Parameters
-    ----------
-    x : torch.Tensor
-        Dense [n, d] or [n, k, d] tensor containing the node attributes/embeddings.
-    eps_factor : [type], optional
-        Factor to be multiplied by `torch.finfo(x.dtype).eps` for "safe" sqrt, by default 1e2.
-    Returns
-    -------
-    torch.Tensor
-        [n, n] or [n, k, k] distance matrix.
-    """
-    x_norm = (x ** 2).sum(-1).unsqueeze(-1)
-    x_norm_t = x_norm.transpose(-2,-1)
-    squared = x_norm + x_norm_t - (2 * (x @ x.transpose(-2, -1)))
-    # For "save" sqrt
-    eps = eps_factor * torch.finfo(x.dtype).eps
-    return torch.sqrt(torch.abs(squared) + eps)
-
-def soft_weighted_medoid(x, temperature=1.0):
-    """A weighted Medoid aggregation.
-
-    Parameters
-    ----------
-    x : torch.Tensor
-        Dense [n, d] tensor containing the node attributes/embeddings.
-    temperature : float, optional
-        Temperature for the argmin approximation by softmax, by default 1.0
-    Returns
-    -------
-    torch.Tensor
-        The new embeddings [n, d].
-    """
-    # Geisler 2020, eqs 2-3
-    distances = _distance_matrix(x)
-    s = F.softmax(-distances.sum(dim=-1) / temperature, dim=-1)
-    return (s.unsqueeze(-1) * x).sum(dim=-2)
-
-
-# read in SDSS theta and spectra
-def load_data(path, which=None, device=None):
-
-    assert which in [None, "train", "valid", "test"]
-
-    data = np.load(path)
-
-    # define subsets
-    N = len(data['spectra'])
-    n_train, n_valid = int(N*0.7), int(N*0.15)
-    n_test = N - n_train - n_valid
-
-    sl = {None: slice(None),
-          "train": slice(0, n_train),
-          "valid": slice(n_train, n_train+n_valid),
-          "test": slice(n_train+n_valid, n_train+n_valid+n_test),
-         }
-    sl = sl[which]
-
-    y = data['spectra'][sl]
-    wave = 10**data['wave']
-    z = data['z'][sl]
-    zerr = np.maximum(data['zerr'][sl], 1e-6) # one case has zerr=0, but looks otherwise OK
-    ivar = data['ivar'][sl]
-    mask = data['mask'][sl]
-
-    # SDSS IDs
-    id = data['plate'][sl], data['mjd'][sl], data['fiber'][sl]
-    id = [f"{plate}-{mjd}-{fiber}" for plate, mjd, fiber in np.array(id).T]
-
-    # get normalization
-    norm = get_norm(y)
-
-    w = ivar * ~mask * (norm**2)[:,None]
-    sel = np.any(w > 0, axis=1)   # remove all spectra that have all zero weights
-    sel &= (norm > 0) & (z < 0.5)   # plus noisy ones and redshift outliers
-
-    w = np.maximum(w, 1e-6)       # avoid zero weights for logL normalization
-    w = w[sel]
-    y = y[sel] / norm[sel, None]
-    z = z[sel]
-    zerr = zerr[sel]
-    norm = norm[sel]
-    id = np.array(id)[sel]
-
-
-    print (f"Loading {len(y)} spectra (which = {which})")
-
-    y = torch.tensor(y, dtype=torch.float32, device=device)
-    w = torch.tensor(w, dtype=torch.float32, device=device)
-    z = torch.tensor(z, dtype=torch.float32, device=device)
-    zerr = torch.tensor(zerr, dtype=torch.float32, device=device)
-
-    return {"wave": wave,
-            "y": y,
-            "w": w,
-            "z": z,
-            "zerr": zerr,
-            "norm": norm,
-            "id": id,
-            "N": len(y),
-           }
-
-def load_model(fileroot):
-    if not torch.cuda.is_available():
-        device = torch.device('cpu')
-    else:
-        device = None
-
-    path = f'{fileroot}.pt'
-    model = torch.load(path, map_location=device)
-    if type(model)==list or type(model)==tuple:
-        [m.eval() for m in model]
-    else: model.eval()
-    path = f'{fileroot}.losses.npy'
-    loss = np.load(path)
-
-    print (f"model {fileroot}: iterations {len(loss)}, final loss: {loss[-1]}")
-    return model, loss
-
-def load_models(label, n_config):
-    models, losses = {}, {}
-    best_model, best_loss = 0, np.inf
-    for i in range(n_config):
-        try:
-            label_ = label + f".{i}"
-            model, loss = load_model(label_)
-            models[i] = model
-            losses[i] = loss
-            if loss[-1][1] < best_loss:
-                best_loss = loss[-1][1]
-                best_model = i
-        except FileNotFoundError:
-            pass
-
-    return models, losses, best_model
 
 
 # Redshift distribution from histogram
@@ -188,7 +36,7 @@ class RedshiftPrior(nn.Module):
         return z_
 
 
-#### Simple MLP ####    
+#### Simple MLP ####
 class MLP(nn.Module):
     def __init__(self,
                  n_in,
@@ -196,7 +44,7 @@ class MLP(nn.Module):
                  n_hidden=(16, 16, 16),
                  dropout=0):
         super(MLP, self).__init__()
-        
+
         layer = []
         n_ = [n_in, *n_hidden, n_out]
         for i in range(len(n_)-1):
@@ -207,17 +55,17 @@ class MLP(nn.Module):
 
     def forward(self, x):
         return self.mlp(x)
-    
-    
+
+
 #### Spectrum encoder    ####
 #### based on Serra 2018 ####
 #### with robust feature combination from Geisler 2020 ####
 class SpectrumEncoder(nn.Module):
     def __init__(self, n_latent, n_hidden=(128, 64, 32), dropout=0):
-        
+
         super(SpectrumEncoder, self).__init__()
         self.n_latent = n_latent
-        
+
         # spectrum convolutions
         filters = [128, 256, 512]
         sizes = [5, 11, 21]
@@ -234,7 +82,7 @@ class SpectrumEncoder(nn.Module):
 
         # small MLP to go from CNN features + redshift to latents
         self.mlp = MLP(self.n_feature + 1, self.n_latent, n_hidden=n_hidden, dropout=dropout)
-        
+
 
     def _conv_blocks(self, filters, sizes, dropout=0):
         convs = []
@@ -278,12 +126,12 @@ class SpectrumEncoder(nn.Module):
         a = self.softmax(a * aw)
         # apply attention
         x = torch.sum(h * a, dim=2)
-        
+
         # redshift depending feature combination to final latents
         if z is None:
             z = torch.zeros(len(x))
         assert len(x) == len(z)
-        x = torch.concat((x, z.unsqueeze(-1)), dim=-1)
+        x = torch.cat((x, z.unsqueeze(-1)), dim=-1)
         x = self.mlp(x)
         return x
 
@@ -307,7 +155,7 @@ class SpectrumDecoder(MLP):
             n_hidden=n_hidden,
             dropout=dropout,
             )
-        
+
         self.n_latent = n_latent
 
         # register wavelength tensors on the same device as the entire model
@@ -353,12 +201,14 @@ class BaseAutoencoder(nn.Module):
     def __init__(self,
                  encoder,
                  decoder,
+                 normalize=False,
                 ):
 
         super(BaseAutoencoder, self).__init__()
         assert encoder.n_latent == decoder.n_latent
         self.encoder = encoder
         self.decoder = decoder
+        self.normalize = normalize
 
     def encode(self, x, w=None, z=0):
         return self.encoder(x, w=w, z=z)
@@ -366,10 +216,13 @@ class BaseAutoencoder(nn.Module):
     def decode(self, x):
         return self.decoder(x)
 
-    def _forward(self, x, w=None, instrument=None, z=None):
-        s = self.encode(x, w=w, z=z)
+    def _forward(self, x, w=None, instrument=None, z=None, s=None):
+        if s is None:
+            s = self.encode(x, w=w, z=z)
         spectrum_restframe = self.decode(s)
         spectrum_observed = self.decoder.transform(spectrum_restframe, instrument=instrument, z=z)
+        if self.normalize:
+            spectrum_observed = self._normalize(x, spectrum_observed, w=w)
         return s, spectrum_restframe, spectrum_observed
 
     def forward(self, x, w=None, instrument=None, z=None):
@@ -392,6 +245,14 @@ class BaseAutoencoder(nn.Module):
 
         return torch.sum(loss_ind / D)
 
+    def _normalize(self, x, m, w=None):
+        # apply constant factor c that minimizes (c*m - x)^2
+        if w is None:
+            w = 1
+        mw = m*w
+        c = (mw * x).sum(dim=-1) / (mw * w).sum(dim=-1)
+        return m * c.unsqueeze(-1)
+
     @property
     def n_parameters(self):
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
@@ -406,6 +267,7 @@ class SpectrumAutoencoder(BaseAutoencoder):
                  n_redundant=2,
                  T=0.5,
                  dropout=0,
+                 normalize=False,
                 ):
 
         encoder = SpectrumEncoder(n_latent, dropout=dropout)
@@ -420,6 +282,7 @@ class SpectrumAutoencoder(BaseAutoencoder):
         super(SpectrumAutoencoder, self).__init__(
             encoder,
             decoder,
+            normalize=normalize,
         )
 
 
@@ -444,7 +307,7 @@ class Instrument(nn.Module):
         wave_kernel_rest = torch.arange(wave_kernel.min().floor(), wave_kernel.max().ceil(), h)
         # make sure kernel has odd length for padding 'same'
         if len(wave_kernel_rest) % 2 == 0:
-            wave_kernel_rest = torch.concat((wave_kernel_rest, torch.tensor([wave_kernel_rest.max() + h,])), 0)
+            wave_kernel_rest = torch.cat((wave_kernel_rest, torch.tensor([wave_kernel_rest.max() + h,])), 0)
         lsf_kernel_rest = Interp1d()(wave_kernel, lsf_kernel, wave_kernel_rest)
         lsf_kernel_rest /= lsf_kernel_rest.sum()
 
