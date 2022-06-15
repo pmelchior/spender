@@ -250,7 +250,7 @@ class BaseAutoencoder(nn.Module):
         if w is None:
             w = 1
         mw = m*w
-        c = (mw * x).sum(dim=-1) / (mw * w).sum(dim=-1)
+        c = (mw * x).sum(dim=-1) / (mw * m).sum(dim=-1)
         return m * c.unsqueeze(-1)
 
     @property
