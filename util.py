@@ -119,14 +119,13 @@ def load_data(path, which=None, device=None):
             "N": len(y),
            }
 
-def load_model(fileroot,n_latent=10):
+def load_model(fileroot):
     if not torch.cuda.is_available():
         device = torch.device('cpu')
     else:
         device = None
     
     path = f'{fileroot}.pt'
-    print("path:",path)
     model = torch.load(path, map_location=device)
     if type(model)==list or type(model)==tuple:
         [m.eval() for m in model]
