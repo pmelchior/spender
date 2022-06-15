@@ -12,11 +12,12 @@ from torch import optim
 from torch.distributions.normal import Normal
 from torchinterp1d import Interp1d
 
-from utils import *
-from model import SpectrumAutoencoder, Instrument, load_data
+from util import load_data,load_model,skylines_mask
+from emission_lines import *
+from model import SpectrumAutoencoder, Instrument
+
 import accelerate
 from accelerate import Accelerator
-
 #from memory_profiler import profile
 import humanize,psutil,GPUtil
 
@@ -27,9 +28,6 @@ savemodel = "models"
 
 data_file = ["%s/sdssrand_N74000_spectra.npz"%(data_dir),
              "%s/bossrand_N74000_spectra.npz"%(data_dir)]
-
-#data_file = ["%s/sdssrand_N24000_spectra.npz"%(data_dir),
-#             "%s/bossrand_N44000_spectra.npz"%(data_dir)]
 
 #data_file = ["%s/cutted-sdss_spectra.npz"%(data_dir),
 #             "%s/boss-20k_spectra.npz"%(data_dir)]
@@ -44,6 +42,8 @@ skip=[False,False]
 debug = False
 bat_prefix = "mix"#"normalized"
 copy_exists = True #calib_active = [False,True]
+
+option_normalize = True
 code = "v2"
 n_latent = 2
 
@@ -64,14 +64,13 @@ def prepare_train(seq,niter=500):
 train_sequence=prepare_train([FULL])
 if "debug" in sys.argv:debug=True
 
-model_k = 13
-label = "%s/joint-%s"%(savemodel,code)
-#save_copy = "%s/robust-copy.%d.pt"%(savemodel,model_k)
+model_k = 2
+label = "%s/opt_norm-%s"%(savemodel,code)
 
 # model number
 # load from
 #label_ = label+".%d"%model_k
-label_ = label+".4"
+label_ = label+".1"
 
 class LogLinearDistribution():
     def __init__(self, a, bound):
@@ -128,41 +127,6 @@ def mem_report():
     for i, gpu in enumerate(GPUs):
         print('GPU {:d} ... Mem Free: {:.0f}MB / {:.0f}MB | Utilization {:3.0f}%'.format(i, gpu.memoryFree, gpu.memoryTotal, gpu.memoryUtil*100))
     return
-    
-def load_model(fileroot,n_latent=10):
-    if not torch.cuda.is_available():
-        device = torch.device('cpu')
-    else:
-        device = None
-    
-    path = f'{fileroot}.pt'
-    print("path:",path)
-    model = torch.load(path, map_location=device)
-    if type(model)==list or type(model)==tuple:
-        [m.eval() for m in model]
-    elif type(model)==dict:
-        mdict = model
-        print("states:",mdict.keys())
-
-        models = mdict["model"]
-        instruments = mdict["instrument"]
-        model = []
-        if "n_latent" in mdict:n_latent=mdict["n_latent"]
-        for m in models:
-            loadm = SpectrumAutoencoder(wave_rest,n_latent=n_latent)
-            loadm.load_state_dict(m)
-            loadm.eval()
-            model.append(loadm)
-            
-        for ins in instruments:
-            empty=Instrument(wave_obs=None, calibration=None)
-            model.append(empty)
-        
-    else: model.eval()
-    path = f'{fileroot}.losses.npy'
-    loss = np.load(path)
-    print (f"model {fileroot}: iterations {len(loss)}, final loss: {loss[-1]}")
-    return model, loss
   
 def insert_jitters(spec,number,slope=-1.32,bound=[0.0,2]):
     number = int(number)
@@ -407,30 +371,6 @@ def robust_loss(model,spec,w,instrument,z,copy_info,nbatch,mask):
 
     return loss
 
-
-def skylines_mask(waves,intensity_limit=2,radii=5,debug=True):
-    
-    f=open("sky-lines.txt","r")
-    content = f.readlines()
-    f.close()
-    
-    skylines = [[10*float(line.split()[0]),float(line.split()[1])] for line in content if not line[0]=="#" ]
-    skylines = np.array(skylines)
-    
-    n_lines = 0
-    mask = ~(waves>0)
-    
-    for line in skylines:
-        line_pos, intensity = line
-        if line_pos>waves.max():continue
-        if intensity<intensity_limit:continue
-        n_lines += 1
-        mask[(waves<(line_pos+radii))*(waves>(line_pos-radii))] = True
-
-    non_zero = torch.count_nonzero(mask)
-    if debug:print("number of lines: %d, fraction: %.2f"%(n_lines,non_zero/mask.shape[0]))
-    return mask
-
 def checkpoint(args,optimizer,scheduler,n_encoder,label):
     unwrapped = [accelerator.unwrap_model(args_i).state_dict()\
                  for args_i in args]
@@ -654,19 +594,20 @@ if "new" in sys.argv:
     loss = []
     lr = 1e-3
     n_hidden = (64, 256, 1024)
-
     for i in range(n_encoder):
         if skip[i]:continue
         model_i = SpectrumAutoencoder(wave_rest,
                                       n_latent=n_latent,
-                                      n_hidden=n_hidden)
+                                      n_hidden=n_hidden,
+                                      normalize=option_normalize)
         models.append(model_i)
+        print("model_i.normalize:",model_i.normalize)
     # reuse decoder
     if len(models)==2:
         print("Using the same decoder!!")
         models[1].decoder = models[0].decoder
     instruments = [None]*n_encoder
-    
+    #exit()
 else: 
     
     models, loss = load_model(label_,n_latent=n_latent)
