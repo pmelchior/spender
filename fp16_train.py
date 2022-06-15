@@ -12,7 +12,7 @@ from torch import optim
 from torch.distributions.normal import Normal
 from torchinterp1d import Interp1d
 
-from util import load_data,load_model,skylines_mask
+from util import load_data,skylines_mask
 from emission_lines import *
 from model import SpectrumAutoencoder, Instrument
 
@@ -64,7 +64,7 @@ def prepare_train(seq,niter=500):
 train_sequence=prepare_train([FULL])
 if "debug" in sys.argv:debug=True
 
-model_k = 2
+model_k = 1
 label = "%s/opt_norm-%s"%(savemodel,code)
 
 # model number
@@ -127,6 +127,42 @@ def mem_report():
     for i, gpu in enumerate(GPUs):
         print('GPU {:d} ... Mem Free: {:.0f}MB / {:.0f}MB | Utilization {:3.0f}%'.format(i, gpu.memoryFree, gpu.memoryTotal, gpu.memoryUtil*100))
     return
+    
+def load_model(fileroot,n_latent=10):
+    if not torch.cuda.is_available():
+        device = torch.device('cpu')
+    else:
+        device = None
+    
+    path = f'{fileroot}.pt'
+    print("path:",path)
+    model = torch.load(path, map_location=device)
+    if type(model)==list or type(model)==tuple:
+        [m.eval() for m in model]
+    elif type(model)==dict:
+        mdict = model
+        print("states:",mdict.keys())
+
+        models = mdict["model"]
+        instruments = mdict["instrument"]
+        model = []
+        if "n_latent" in mdict:n_latent=mdict["n_latent"]
+        for m in models:
+            loadm = SpectrumAutoencoder(wave_rest,n_latent=n_latent,
+                                        normalize=option_normalize)
+            loadm.load_state_dict(m)
+            loadm.eval()
+            model.append(loadm)
+            
+        for ins in instruments:
+            empty=Instrument(wave_obs=None, calibration=None)
+            model.append(empty)
+        
+    else: model.eval()
+    path = f'{fileroot}.losses.npy'
+    loss = np.load(path)
+    print (f"model {fileroot}: iterations {len(loss)}, final loss: {loss[-1]}")
+    return model, loss
   
 def insert_jitters(spec,number,slope=-1.32,bound=[0.0,2]):
     number = int(number)

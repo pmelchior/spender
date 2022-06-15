@@ -130,24 +130,6 @@ def load_model(fileroot,n_latent=10):
     model = torch.load(path, map_location=device)
     if type(model)==list or type(model)==tuple:
         [m.eval() for m in model]
-    elif type(model)==dict:
-        mdict = model
-        print("states:",mdict.keys())
-
-        models = mdict["model"]
-        instruments = mdict["instrument"]
-        model = []
-        if "n_latent" in mdict:n_latent=mdict["n_latent"]
-        for m in models:
-            loadm = SpectrumAutoencoder(wave_rest,n_latent=n_latent)
-            loadm.load_state_dict(m)
-            loadm.eval()
-            model.append(loadm)
-            
-        for ins in instruments:
-            empty=Instrument(wave_obs=None, calibration=None)
-            model.append(empty)
-        
     else: model.eval()
     path = f'{fileroot}.losses.npy'
     loss = np.load(path)
