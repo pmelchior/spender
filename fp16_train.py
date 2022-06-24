@@ -14,6 +14,7 @@ from torchinterp1d import Interp1d
 
 from util import load_data,skylines_mask
 from emission_lines import *
+from batch_wrapper import wrap_batches, save_batch, LOGWAVE_RANGE
 from model import SpectrumAutoencoder, Instrument
 
 import accelerate
@@ -26,24 +27,20 @@ data_dir = "/scratch/gpfs/yanliang"
 dynamic_dir = "/scratch/gpfs/yanliang/dynamic-data"
 savemodel = "models"
 
-data_file = ["%s/sdssrand_N74000_spectra.npz"%(data_dir),
-             "%s/bossrand_N74000_spectra.npz"%(data_dir)]
+#data_file = ["%s/sdssrand_N74000_spectra.npz"%(data_dir),
+#             "%s/bossrand_N74000_spectra.npz"%(data_dir)]
 
-#data_file = ["%s/cutted-sdss_spectra.npz"%(data_dir),
-#             "%s/boss-20k_spectra.npz"%(data_dir)]
-
-#data_file = ["%s/joint-sdss_spectra.npz"%(data_dir),
-#             "%s/joint-boss_spectra.npz"%(data_dir)]
+datatag = "all"
+data_prefix = ["%s%s"%(i,datatag) for i in ["SDSS","BOSS"]]
+NBATCH = 300
 
 encoder_names = ["sdss","boss"]
 n_encoder = len(encoder_names)
 skip=[False,False]
 
 debug = False
-bat_prefix = "mix"#"normalized"
-copy_exists = True #calib_active = [False,True]
-
 option_normalize = True
+override_copies = False
 code = "v2"
 n_latent = 2
 
@@ -55,7 +52,7 @@ D = {"data":[True,True],"encoder":[False,False],"decoder":True}
 SEBE = {"data":[True,True], "decoder":False}
 FULL = {"data":[True,True],"decoder":True}
 
-def prepare_train(seq,niter=500):
+def prepare_train(seq,niter=200):
     for d in seq:
         if not "iteration" in d:d["iteration"]=niter
         if not "encoder" in d:d.update({"encoder":d["data"]})
@@ -64,13 +61,13 @@ def prepare_train(seq,niter=500):
 train_sequence=prepare_train([FULL])
 if "debug" in sys.argv:debug=True
 
-model_k = 1
+model_k = 9
 label = "%s/opt_norm-%s"%(savemodel,code)
 
 # model number
 # load from
 #label_ = label+".%d"%model_k
-label_ = label+".1"
+label_ = label+".7"
 
 class LogLinearDistribution():
     def __init__(self, a, bound):
@@ -94,6 +91,30 @@ class LogLinearDistribution():
     def inv_cdf(self,cdf):
         factor = self.norm/(-self.a*np.log(10))
         return (1/self.a)*torch.log10(10**(self.a*self.bound[0])-cdf/factor)
+    
+    
+def collect_batches(datatag,which=None,NBATCH = 100):
+    
+    data_prefix = ["%s%s"%(i,datatag) for i in ["SDSS","BOSS"]]
+    batch_files = os.listdir(dynamic_dir)
+    train_batches = []
+    valid_batches = []
+    test_batches = []
+    all_batches = []
+    for j in range(len(data_prefix)):  
+        batches = [item for item in batch_files if data_prefix[j] in item\
+                   and not "copy" in item]
+        print("# batches: %d"%len(batches))
+        NBATCH = min(NBATCH,len(batches))
+        batches = random.sample(batches,NBATCH)
+        all_batches.append(batches)
+        train_batches.append(batches[:int(0.7*NBATCH)])
+        valid_batches.append(batches[int(0.7*NBATCH):int(0.85*NBATCH)])
+        test_batches.append(batches[int(0.85*NBATCH):])
+    if which == "test": return test_batches
+    elif which == "valid": return valid_batches
+    elif which == "train": return train_batches
+    else: return all_batches
 
 class CPU_Unpickler(pickle.Unpickler):
     def find_class(self, module, name):
@@ -101,23 +122,18 @@ class CPU_Unpickler(pickle.Unpickler):
             return lambda b: torch.load(io.BytesIO(b), map_location='cpu')
         else: return super().find_class(module, name)
 
-def load_batch(k,data_file,mode="train"):
-    dataname = os.path.basename(data_file).split(".")[0]
-    batch_name = "[%s]%s-%s-%d.pkl"%(bat_prefix,dataname,mode,k)
-    
+def load_batch(batch_name):
     with open("%s/%s"%(dynamic_dir,batch_name), 'rb') as f:
-        if torch.cuda.is_available():batch_copy = pickle.load(f)
-        else:batch_copy = CPU_Unpickler(f).load()
-    return batch_copy
-
-def save_batch(batch_copy,k,data_file,mode="train"):
-    dataname = os.path.basename(data_file).split(".")[0]
-    batch_name = "[%s]%s-%s-%d.pkl"%(bat_prefix,dataname,mode,k)
-    with open("%s/%s"%(dynamic_dir,batch_name), 'wb') as f:
-        pickle.dump(batch_copy,f)
-    print("Saving to %s/%s.."%(dynamic_dir,batch_name))
-    return
-
+        if torch.cuda.is_available():
+            batch_copy = pickle.load(f)
+        else:batch_copy = CPU_Unpickler(f).load()    
+    
+    if type(batch_copy)==list:
+        spec,w,z = [item.to(device) for item in batch_copy[:3]]
+        w[w<1e-6] = 1e-6
+        return spec,w,z
+    else:return batch_copy
+    
 def mem_report():
     print("CPU RAM Free: " + humanize.naturalsize( psutil.virtual_memory().available ))
   
@@ -224,7 +240,7 @@ def jitter_redshift(batch, params, inst):
             loc,amp = insert_jitters(spec_new[i],n_jit[i])
             spec_new[i][loc] += amp
             w_new[i][loc] = 1/(amp**2+1/w_new[i][loc])
-            record.append([z_offset[i],n_jit[i]])
+            record.append([z_offset[i].item(),n_jit[i]])
         
         med = spec_new.median(1,False).values[:,None]
         med[med<1e-1] = 1e-1
@@ -236,7 +252,6 @@ def jitter_redshift(batch, params, inst):
             nan_ind = torch.isnan(spec_new)
             print("spec nan! z:", true_z[nan_ind], 
                   "offset:",z_offset[nan_ind])
-            #exit()
             
         end = begin+batch_size
         data.append([spec_new,w_new,z_new])
@@ -245,7 +260,6 @@ def jitter_redshift(batch, params, inst):
     
     new_batch = [torch.cat([d[i] for d in data]) for i in range(3)]
     batch_out['batch'] = new_batch
-    
     return batch_out
 
 def boss_sdss_id():
@@ -361,9 +375,20 @@ def latent_loss(model,spec,w,instrument,z,copy_info,nbatch,
 
 def robust_loss(model,spec,w,instrument,z,copy_info,nbatch,mask):
     
-    batch_copy = load_batch(*copy_info)
-    batch_copy = accelerator.prepare(batch_copy)
+    ta = time.time()
+    copyname = copy_info.split(".")[0] + "_copy.pkl"
+    if os.path.isfile("%s/%s"%(dynamic_dir,copyname)):
+        print("loading from", copyname)
+        batch_copy = load_batch(copyname)
+        tb = time.time()
+    else: 
+        print("saving to", copyname)
+        batch_copy = jitter_redshift([spec,w,z],mock_params,instrument)
+        save_batch(batch_copy,copyname)
+        tb = time.time()
+    print("Time: %.2f s"%(tb-ta))
     
+    batch_copy = accelerator.prepare(batch_copy)
     spec_copy,w_copy,z_copy = batch_copy["batch"]
     
     if mask != {}:
@@ -381,7 +406,6 @@ def robust_loss(model,spec,w,instrument,z,copy_info,nbatch,mask):
     loss = 0
     for key in batch_copy:        
         if type(key)==str: continue
-
         begin,end = batch_copy[key]["range"]
         
         #data window redshifted to z=0
@@ -427,11 +451,10 @@ def checkpoint(args,optimizer,scheduler,n_encoder,label):
     return
     
 #@profile
-def train(models, accelerator, instruments, trainloaders, 
-          validloaders, n_epoch=200, label="", losses = [],
+def train(models, accelerator, instruments, train_batches, 
+          valid_batches, n_epoch=200, label="", losses = [],
           silent=False, lr=1e-4, fp16=True, data_copy=True,
-          latent=False, per_epoch=False, 
-          mask_skyline=True):
+          latent=False, mask_skyline=True):
     
     model_parameters,n_parameters = get_all_parameters(models,instruments)
     
@@ -453,12 +476,10 @@ def train(models, accelerator, instruments, trainloaders,
     
     detailed_loss = {}
     
-    nwidth = max([len(trainloaders[j].dataset)//batch_size\
-                  for j in range(n_encoder)])
+    nwidth = max([len(train_batches[j]) for j in range(n_encoder)])
     
     if not "train" in detailed_loss:
         detailed_loss["train"]=np.zeros((n_encoder,nwidth,n_epoch))
-    
     
     if mask_skyline:
         mask_dicts = []
@@ -490,13 +511,14 @@ def train(models, accelerator, instruments, trainloaders,
             models[which].train()
             instruments[which].train()
             
-            
             train_loss = 0.
-            nbatch = len(trainloaders[which].dataset)//batch_size
-
-            for k,batch in enumerate(trainloaders[which]):
+            nbatch = len(train_batches[which])
+            
+            for k,batchname in enumerate(train_batches[which]):
 
                 #optimizer.zero_grad()
+                batch = load_batch(batchname)
+                batch = accelerator.prepare(batch)
                 spec, w, z = batch
 
                 if mask_skyline:
@@ -521,21 +543,27 @@ def train(models, accelerator, instruments, trainloaders,
                 if not data_copy: 
                     train_loss += loss.item()
                     if k<nbatch:detailed_loss["train"][which][k][epoch] = loss.item()
-                    if per_epoch:continue
+                    
                     optimizer.step()
                     optimizer.zero_grad()
                     continue
 
                 args = (models[which],spec,w,instruments[which],
-                        z,(k,data_file[which]),nbatch,mask_dicts[which])
+                        z,(batchname),nbatch,mask_dicts[which])
 
                 if latent: 
                     copy_loss = latent_loss(*args)
                     batch_loss = 0.5*copy_loss
                 else:
                     copy_loss = robust_loss(*args)
+                    print("copy_loss:",copy_loss)
                     batch_loss = 0.5*(loss+copy_loss)
-                    #scaler.scale(copy_loss).backward()
+                    if np.isnan(batch_loss.item()):
+                        print("nan!!")
+                        print("spec:",spec.min(),spec.max())
+                        print("w:",w.min(),w.max())
+                        print("z:",z.min(),z.max())
+                        exit()
                     
                 train_loss += batch_loss.item()
                 
@@ -546,20 +574,14 @@ def train(models, accelerator, instruments, trainloaders,
                 mem_report()
                 accelerator.backward(copy_loss)  
                 
-                if per_epoch:continue
                 # once per batch
                 optimizer.step()
                 optimizer.zero_grad()
             
-            train_loss /= (len(trainloaders[which].dataset))
+            train_loss /= (len(train_batches[which])*batch_size)
             loss_ep[n_encoder*which] = train_loss
-        
-        if per_epoch:
-            # once per epoch
-            optimizer.step()
-            optimizer.zero_grad()
+            
         scheduler.step()
-        
         with torch.no_grad():
             for which in range(n_encoder):
                 if skip[which]:continue
@@ -567,25 +589,26 @@ def train(models, accelerator, instruments, trainloaders,
                 instruments[which].eval()
             
                 valid_loss = 0.
-                nbatch = (len(validloaders[which].dataset)//batch_size+1)
-                for k,batch in enumerate(validloaders[which]):
+                nbatch = len(valid_batches[which])
+                for k,batchname in enumerate(valid_batches[which]):
+                    batch = load_batch(batchname)
+                    batch = accelerator.prepare(batch)
                     spec, w, z = batch
                     
                     if mask_skyline:
                         # "zero" weight for masked region
                         maskmat = mask_dicts[which]["mask"].repeat(w.shape[0],1)
                         w[maskmat]=1e-6
-                    
-                    
                     #with torch.cuda.amp.autocast(enabled=fp16):
                     loss = models[which].loss(spec,w, instruments[which],z=z)
+                    
                     if data_copy:
                         args = (models[which],spec,w,instruments[which],
-                                z,(k,data_file[which],"valid"),nbatch,mask_dicts[which])
+                                z,(batchname),nbatch,mask_dicts[which])
                         copy_loss = robust_loss(*args)
                         valid_loss += 0.5*(loss.item()+copy_loss.item())
                     else:valid_loss += loss.item()
-                valid_loss /= (len(validloaders[which].dataset))
+                valid_loss /= (len(valid_batches[which])*batch_size)
                 
                 loss_ep[n_encoder*which+1] = valid_loss
                 if not mode['data'][which]:
@@ -601,20 +624,18 @@ def train(models, accelerator, instruments, trainloaders,
             save_loss = np.array(losses)   
             np.save(f'{label}.losses.npy', save_loss)
             np.save(f'{label}.detail.npy', detailed_loss["train"])
-            
-            #accelerator.save_state(f'{label}.pt')
-            #continue
+
             args = models + instruments
             checkpoint(args,optimizer,scheduler,n_encoder,label)
+    return
 
-            
 # load data, specify GPU to prevent copying later
 # TODO: use torch.cuda.amp.autocast() for FP16/BF16 typcast
 # TODO: need dynamic data loader if we use larger data sets
 
 # restframe wavelength for reconstructed spectra
 # Note: represents joint dataset wavelength range
-lmbda_min = 2371#data['wave'].min()/(1+data['z'].max())
+lmbda_min = 2359#data['wave'].min()/(1+data['z'].max())
 lmbda_max = 10402#data['wave'].max()
 bins = 7000#int(data['wave'].shape[0] * (1 + data['z'].max()))
 wave_rest = torch.linspace(lmbda_min, lmbda_max, bins, dtype=torch.float32)
@@ -659,87 +680,60 @@ else:
 
 SDSS_id, BOSS_id =  boss_sdss_id()
 data_ids =  [SDSS_id, BOSS_id]
-n_ids, n_dim = len(data_ids[0]),10
-
-batch_size=512
-
-trainloaders=[]
-validloaders=[]
+n_ids, n_dim = len(data_ids[0]),2
 
 #accelerator = Accelerator()
 accelerator = Accelerator(mixed_precision='fp16')
+batch_size=512
 
-for j in range(len(data_file)):
-    if skip[j]:continue
-    
-    print("Loading dataset %s"%data_file[j])
-    
-    data=load_data(data_file[j], which="train", device=device)
-    valid_data=load_data(data_file[j], which="valid", device=device)
-    wave_obs = torch.tensor(data['wave'], dtype=torch.float32)
-    wave_obs = wave_obs.to(accelerator.device)
-    
-    
-    trainloader = torch.utils.data.DataLoader(
-        torch.utils.data.TensorDataset(data['y'], data['w'], 
-        data['z']), batch_size=batch_size, 
-        shuffle=False)
+uniform_njit = [100,300]
+mock_params = [[0.4,uniform_njit]]#,[0.1,uniform_njit]]
+ncopy = len(mock_params)
 
-    validloader = torch.utils.data.DataLoader(
-        torch.utils.data.TensorDataset(valid_data['y'], 
-        valid_data['w'], valid_data['z']),
-        batch_size=batch_size)
+
+batch_files = os.listdir(dynamic_dir)
+train_batches = []
+valid_batches = []
+wave_obs = []
+
+import random
+random_seed = 42
+random.seed(random_seed)
+
+alltrain = collect_batches("all",which="train",NBATCH=NBATCH)
+jointtrain = collect_batches("joint",which="train",NBATCH=NBATCH)
+allvalid = collect_batches("all",which="valid",NBATCH=NBATCH)
+jointvalid = collect_batches("joint",which="valid",NBATCH=NBATCH)
+
+for j in range(n_encoder):  
+    lower,upper = LOGWAVE_RANGE[j]
+    wave_obs.append(10**torch.arange(lower, upper, 0.0001))
+    #wrap_batches(j,datatag,k_range=[0,30])
+
+    train_sample = alltrain[j]+jointtrain[j]
+    train_sample = random.sample(train_sample,len(train_sample))
     
-    trainloader, validloader = accelerator.prepare(trainloader, 
-                                                   validloader)
-    trainloaders.append(trainloader)
-    validloaders.append(validloader)
+    valid_sample = allvalid[j]+jointvalid[j]
+    valid_sample = random.sample(valid_sample,len(valid_sample))
+    
+    train_batches.append(train_sample)
+    valid_batches.append(valid_sample)
     
     if instruments[j]==None:
         print("Initializing instrument...")
-        print("wave_obs:",len(wave_obs))
-        
-        # polynomial calibration
-        instruments[j]=Instrument(wave_obs, calibration=None)
+        print("wave_obs:",len(wave_obs[j]))
+        instruments[j]=Instrument(wave_obs[j], calibration=None)
     else:# for compatibility
-        instruments[j].wave_obs = wave_obs
-    
-    # only renew copies at new run
-    #if not "new" in sys.argv:continue
-    if copy_exists:continue
-    
-    # prepare copies!!!
-    uniform_njit = [100,300]
-    params = [[0.4,uniform_njit]]#,[0.1,uniform_njit]]
-    ncopy = len(params)
-
-    for k, batch in enumerate(trainloader):
-        spec, w, z = batch  
+        instruments[j].wave_obs = wave_obs[j]
         
-        print("\nInitializing batch %d copies"%k)
-        ta = time.time()
-        
-        batch_copy = jitter_redshift(batch,params,instruments[j])
-        save_batch(batch_copy,k,data_file[j],mode="train")
-        tb = time.time()
-        
-    for k, batch in enumerate(validloader):
-        spec, w, z = batch  
-        
-        print("\nInitializing batch %d copies"%k)
-        ta = time.time()
-        batch_copy = jitter_redshift(batch,params,instruments[j])
-        save_batch(batch_copy,k,data_file[j],mode="valid")
-        tb = time.time()
-                    
-
+print("train:",train_batches,"valid:",valid_batches)
+#exit()
 n_epoch = sum([item['iteration'] for item in train_sequence])
-
 print ("--- Model %d"%model_k)
 
 init_t = time.time()
-train(models, accelerator, instruments, trainloaders, 
-      validloaders, n_epoch=n_epoch, losses = loss,
+train(models, accelerator, instruments, train_batches, 
+      valid_batches, n_epoch=n_epoch, losses = loss,
       label=label+f".{model_k}", lr=lr)
 
 print("--- %s seconds ---" % (time.time()-init_t))
