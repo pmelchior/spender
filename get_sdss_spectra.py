@@ -11,16 +11,12 @@ import matplotlib.pyplot as plt
 import pickle
 socket.setdefaulttimeout(5)
 
-dat_dir = '/scratch/gpfs/yanliang/sdss-spectra/'
-#save_dir = "joint_headers.pkl"
-paths = ["/scratch/gpfs/yanliang/sdss-spectra",
-         "/scratch/gpfs/yanliang/lite"]
+paths = ["/scratch/gpfs/yanliang"]
 sdss_url = "https://data.sdss.org/sas/dr16/sdss/spectro/redux/26/spectra/lite/"
 boss_url = "https://data.sdss.org/sas/dr16/eboss/spectro/redux/v5_13_0/spectra/lite/"
-
-
-bulk_url = {"SDSS":sdss_url,"BOSS":boss_url}
-save_dir = {"SDSS":"truncated-specobj.pkl","BOSS":"boss_headers.pkl"}
+bulk_url = {0:sdss_url,1:boss_url}
+headers = {0:"truncated-specobj.pkl",
+           1:"boss_headers.pkl"}
 
 def spec_url(plate, mjd, fiberid):
     url = '%s/spec-%s-%i-%s.fits' % \
@@ -35,16 +31,8 @@ def check_exists(input_list,loud=False):
     for item in input_list:
         plate, mjd, fiberid, _ = item
         filename = spec_url(plate, mjd, fiberid)
-        
-        exists = False
-        for path in paths:
-            if "lite" in path:
-                full_path = "%s/%s"%(path,filename)
-            else:full_path = "%s/%s"%(path,os.path.basename(filename))
-            if os.path.exists(full_path):
-                exists=True
-                break
-        if exists: 
+        full_path = "%s/lite/%s"%(paths[0],filename)
+        if os.path.exists(full_path):
             if loud:print("%s exists! skipping"%filename)
         else: output_list.append(item)
     print("output_list:",len(output_list))
@@ -52,10 +40,10 @@ def check_exists(input_list,loud=False):
     
     
 def download_spectra(param):
-    plate, mjd, fiberid, label = param
+    plate, mjd, fiberid, which = param
 
     url = '%s/%s/spec-%s-%i-%s.fits' % \
-    (bulk_url[label],str(plate).zfill(4), str(plate).zfill(4), 
+    (bulk_url[which],str(plate).zfill(4), str(plate).zfill(4), 
      mjd, str(fiberid).zfill(4))  
     
     flocal = os.path.join(dat_dir, os.path.basename(url))
@@ -70,7 +58,8 @@ def download_spectra(param):
         return None
     return None
 
-def download_bulk_spectra(input_list,label,                saveto=".",listname="test"):
+def download_bulk_spectra(input_list,which,  
+                          saveto=".",listname="test"):
 
     text = ""
     for item in input_list:
@@ -83,7 +72,7 @@ def download_bulk_spectra(input_list,label,                saveto=".",listname="
     f.close()
     
     print("Saved %d lines to %s"%(len(input_list),filename))
-    retrieve_url = bulk_url[label]
+    retrieve_url = bulk_url[which]
     command = "wget -nv -r -nH --cut-dirs=7 -i %s -B %s"%(os.path.basename(filename),retrieve_url)
     print("Use the following command:\n",command)
     #os.system(command)
@@ -138,27 +127,26 @@ def headers_cut():
 
 id_names = ['PLATE','MJD','FIBERID']
 
-label = sys.argv[1]
+which = int(sys.argv[1])
 begin = 150000
-batch_size = 50000
+batch_size = 100000
 
 
-f = open(save_dir[label],"rb")
+f = open(headers[which],"rb")
 targets = pickle.load(f)
 f.close()
 
 tic = time.time()
 end = min(begin+batch_size,len(targets))
 
-#labels = ["SDSS","BOSS"]
+labels = ["SDSS","BOSS"]
 
 input_list = []
 for j in range(begin,end):
     plate, mjd, fiber = [targets[k][j] for k in id_names]
-    input_list.append([plate, mjd, fiber, label])
+    input_list.append([plate, mjd, fiber, which])
 
 output_list = check_exists(input_list)
-
 if output_list == []:
     print("All spectra exist!")
     exit()
@@ -168,8 +156,8 @@ print('Done in {:.4f} seconds'.format(toc-tic))
 
 # starts download...    
 if "bulk" in sys.argv:
-    download_bulk_spectra(output_list,label,saveto=save_dir[label],
-                          listname="boss-500k")
+    download_bulk_spectra(output_list,which,saveto=paths[0],
+                          listname="boss-resid")
     exit()
         
 pool = multiprocessing.Pool(15)
