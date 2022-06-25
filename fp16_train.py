@@ -30,9 +30,9 @@ savemodel = "models"
 #data_file = ["%s/sdssrand_N74000_spectra.npz"%(data_dir),
 #             "%s/bossrand_N74000_spectra.npz"%(data_dir)]
 
-datatag = "chunk1024"
+datatag = "all"
 data_prefix = ["%s%s"%(i,datatag) for i in ["SDSS","BOSS"]]
-NBATCH = 150
+NBATCH = 100
 
 encoder_names = ["sdss","boss"]
 n_encoder = len(encoder_names)
@@ -61,7 +61,7 @@ def prepare_train(seq,niter=300):
 train_sequence=prepare_train([FULL])
 if "debug" in sys.argv:debug=True
 
-model_k = 3
+model_k = 4
 label = "%s/opt_norm-%s"%(savemodel,code)
 
 # model number
@@ -334,22 +334,29 @@ def get_all_parameters(models,instruments):
     return dicts,n_parameters
 
 #@profile
-def latent_loss(model,spec,w,instrument,z,copy_info,nbatch,lambda_latent=1):
-    
+def latent_loss(model,spec,w,instrument,z,copy_info,nbatch,mask,
+                lambda_latent=1):
+    ta = time.time()
     s,_,spectrum_observed = model._forward(spec, w, instrument, z)
     loss = model._loss(spec, w, spectrum_observed)
     print("loss_spec:",loss.item())
     batch_size,s_size = s.shape
-    # load partial copies!!
-    ratio = 1
-    lambda_latent /= ratio
-    if copy_info[0]/nbatch>ratio:return loss
-
-    batch_copy = load_batch(*copy_info)
+    
+    copyname = copy_info.split(".")[0] + "_copy.pkl"
+    if os.path.isfile("%s/%s"%(dynamic_dir,copyname)):
+        print("loading from", copyname)
+        batch_copy = load_batch(copyname)
+        tb = time.time()
+    else: 
+        print("saving to", copyname)
+        batch_copy = jitter_redshift([spec,w,z],mock_params,instrument)
+        save_batch(batch_copy,copyname)
+        tb = time.time()
+    
     batch_copy = accelerator.prepare(batch_copy)
     
     spec_copy,w_copy,z_copy = batch_copy["batch"]
-    s_copy = model.encode(spec_copy,w_copy,z=torch.zeros_like(z_copy))
+    s_copy = model.encode(spec_copy, w=w_copy, z=z_copy)
     
     if debug:
         print("spec:",spec[0].min(),spec[0].max())
@@ -364,12 +371,12 @@ def latent_loss(model,spec,w,instrument,z,copy_info,nbatch,lambda_latent=1):
     for key in batch_copy:
         if type(key)==str: continue
         begin,end = batch_copy[key]["range"]
-        loss_lat += torch.sum(((s_copy[begin:end]-s)/1e-1).pow(2))/s_size
+        loss_lat += torch.sum(((s_copy[begin:end]-s)).pow(2))/s_size
     
-    print("loss_lat: ",loss_lat.dtype)   
+    print("loss_lat: ",loss_lat.item())   
     
     if debug:print("latent loss:",lambda_latent*loss_lat.item())
-    #exit()
+    print("Time: %.2f s"%(tb-ta))
     return loss+lambda_latent*loss_lat
 
 def augument_loss(model,spec,w,instrument,z,copy_info,nbatch,mask):
@@ -450,7 +457,7 @@ def checkpoint(args,optimizer,scheduler,n_encoder,label):
 def train(models, accelerator, instruments, train_batches, 
           valid_batches, n_epoch=200, label="", losses = [],
           silent=False, lr=1e-4, fp16=True, data_copy=True,
-          latent=False, mask_skyline=True):
+          latent=True, mask_skyline=True):
     
     model_parameters,n_parameters = get_all_parameters(models,instruments)
     
@@ -531,7 +538,6 @@ def train(models, accelerator, instruments, train_batches,
                 if not latent:
                     loss = models[which].loss(spec,w,instruments[which],z=z)
                     print("loss_spec:",loss.item())
-                    #scaler.scale(loss).backward()
                     accelerator.backward(loss)
                     
                 # skip mock data loss
@@ -543,7 +549,7 @@ def train(models, accelerator, instruments, train_batches,
                     optimizer.step()
                     optimizer.zero_grad()
                     continue
-
+                    
                 args = (models[which],spec,w,instruments[which],
                         z,(batchname),nbatch,mask_dicts[which])
 
