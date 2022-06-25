@@ -133,7 +133,7 @@ def prepare_batch(input_list):
     save_batch(batch_copy,batch_name)
     return
 
-def wrap_batches(which,tag,k_range=[0,10],Nspec=512):
+def wrap_batches(which,tag,k_range=[0,10],Nspec=1024):
     headers = {0:"truncated-specobj.pkl",
                1:"boss_headers.pkl"}
     
@@ -176,7 +176,7 @@ def wrap_batches(which,tag,k_range=[0,10],Nspec=512):
         input_list.append(args)
         #print("prepared batch %d/%d, time=%.2f"%(k,nbatch,tb-ta))
     
-    pool = mp.Pool(5)
+    pool = mp.Pool(15)
     result = pool.map(func=prepare_batch, iterable=input_list)
     pool.close()
     pool.join()
@@ -191,7 +191,7 @@ LOGWAVE_RANGE = [[3.578, 3.97],[3.549, 4.0175]]
 if "batch_wrapper" in sys.argv[0]:
     which = int(sys.argv[1])
     tag = sys.argv[2]
-    wrap_batches(which,tag,k_range=[0,7])
+    wrap_batches(which,tag,k_range=[150,160])
     """
     lprofiler = LineProfiler()
     lprofiler.add_function(read_sdss_spectra)

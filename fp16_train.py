@@ -30,9 +30,9 @@ savemodel = "models"
 #data_file = ["%s/sdssrand_N74000_spectra.npz"%(data_dir),
 #             "%s/bossrand_N74000_spectra.npz"%(data_dir)]
 
-datatag = "all"
+datatag = "chunk1024"
 data_prefix = ["%s%s"%(i,datatag) for i in ["SDSS","BOSS"]]
-NBATCH = 300
+NBATCH = 150
 
 encoder_names = ["sdss","boss"]
 n_encoder = len(encoder_names)
@@ -52,7 +52,7 @@ D = {"data":[True,True],"encoder":[False,False],"decoder":True}
 SEBE = {"data":[True,True], "decoder":False}
 FULL = {"data":[True,True],"decoder":True}
 
-def prepare_train(seq,niter=200):
+def prepare_train(seq,niter=300):
     for d in seq:
         if not "iteration" in d:d["iteration"]=niter
         if not "encoder" in d:d.update({"encoder":d["data"]})
@@ -61,13 +61,13 @@ def prepare_train(seq,niter=200):
 train_sequence=prepare_train([FULL])
 if "debug" in sys.argv:debug=True
 
-model_k = 9
+model_k = 3
 label = "%s/opt_norm-%s"%(savemodel,code)
 
 # model number
 # load from
 #label_ = label+".%d"%model_k
-label_ = label+".7"
+label_ = label+".1"
 
 class LogLinearDistribution():
     def __init__(self, a, bound):
@@ -334,8 +334,7 @@ def get_all_parameters(models,instruments):
     return dicts,n_parameters
 
 #@profile
-def latent_loss(model,spec,w,instrument,z,copy_info,nbatch,
-                lambda_latent=1):
+def latent_loss(model,spec,w,instrument,z,copy_info,nbatch,lambda_latent=1):
     
     s,_,spectrum_observed = model._forward(spec, w, instrument, z)
     loss = model._loss(spec, w, spectrum_observed)
@@ -373,10 +372,10 @@ def latent_loss(model,spec,w,instrument,z,copy_info,nbatch,
     #exit()
     return loss+lambda_latent*loss_lat
 
-def robust_loss(model,spec,w,instrument,z,copy_info,nbatch,mask):
-    
+def augument_loss(model,spec,w,instrument,z,copy_info,nbatch,mask):
     ta = time.time()
     copyname = copy_info.split(".")[0] + "_copy.pkl"
+    
     if os.path.isfile("%s/%s"%(dynamic_dir,copyname)):
         print("loading from", copyname)
         batch_copy = load_batch(copyname)
@@ -397,8 +396,6 @@ def robust_loss(model,spec,w,instrument,z,copy_info,nbatch,mask):
         w_copy[maskmat] = 1e-6
     
     # encode the truncated mock data, super-sampled 
-    #w_copy = None
-    #print("spec_copy:",spec_copy.shape)
     s = model.encode(spec_copy, w=w_copy, z=z_copy)
     spec_rest = model.decoder.decode(s)
     
@@ -414,7 +411,6 @@ def robust_loss(model,spec,w,instrument,z,copy_info,nbatch,mask):
         
         # resample model on restframe data
         spec_new = Interp1d()(wave_rest,spec_rest[begin:end],wave_z0)
-        
         loss += model._loss(spec, w, spec_new)
     
     if debug:
@@ -511,6 +507,7 @@ def train(models, accelerator, instruments, train_batches,
             models[which].train()
             instruments[which].train()
             
+            nsamples = 0
             train_loss = 0.
             nbatch = len(train_batches[which])
             
@@ -520,21 +517,19 @@ def train(models, accelerator, instruments, train_batches,
                 batch = load_batch(batchname)
                 batch = accelerator.prepare(batch)
                 spec, w, z = batch
-
+                
                 if mask_skyline:
                     # "zero" weight for masked region
                     maskmat = mask_dicts[which]["mask"].repeat(w.shape[0],1)
                     w[maskmat]=1e-6
                 
-                print("[batch %d/%d]: begin"%(k,nbatch))
+                batch_size = spec.shape[0]
+                nsamples += batch_size
+                print("[batch %d/%d,batch_size=%d]: begin"%(k,nbatch,batch_size))
                 mem_report()
-  
-                # back-propagation!!
-                #with torch.cuda.amp.autocast(enabled=fp16):
 
                 if not latent:
                     loss = models[which].loss(spec,w,instruments[which],z=z)
-
                     print("loss_spec:",loss.item())
                     #scaler.scale(loss).backward()
                     accelerator.backward(loss)
@@ -542,7 +537,8 @@ def train(models, accelerator, instruments, train_batches,
                 # skip mock data loss
                 if not data_copy: 
                     train_loss += loss.item()
-                    if k<nbatch:detailed_loss["train"][which][k][epoch] = loss.item()
+                    
+                    detailed_loss["train"][which][k][epoch] = loss.item()/batch_size
                     
                     optimizer.step()
                     optimizer.zero_grad()
@@ -555,7 +551,7 @@ def train(models, accelerator, instruments, train_batches,
                     copy_loss = latent_loss(*args)
                     batch_loss = 0.5*copy_loss
                 else:
-                    copy_loss = robust_loss(*args)
+                    copy_loss = augument_loss(*args)
                     print("copy_loss:",copy_loss)
                     batch_loss = 0.5*(loss+copy_loss)
                     if np.isnan(batch_loss.item()):
@@ -578,7 +574,7 @@ def train(models, accelerator, instruments, train_batches,
                 optimizer.step()
                 optimizer.zero_grad()
             
-            train_loss /= (len(train_batches[which])*batch_size)
+            train_loss /= nsamples
             loss_ep[n_encoder*which] = train_loss
             
         scheduler.step()
@@ -589,12 +585,14 @@ def train(models, accelerator, instruments, train_batches,
                 instruments[which].eval()
             
                 valid_loss = 0.
+                nsamples = 0
                 nbatch = len(valid_batches[which])
                 for k,batchname in enumerate(valid_batches[which]):
                     batch = load_batch(batchname)
                     batch = accelerator.prepare(batch)
                     spec, w, z = batch
-                    
+                    batch_size = spec.shape[0]
+                    nsamples += batch_size
                     if mask_skyline:
                         # "zero" weight for masked region
                         maskmat = mask_dicts[which]["mask"].repeat(w.shape[0],1)
@@ -605,10 +603,10 @@ def train(models, accelerator, instruments, train_batches,
                     if data_copy:
                         args = (models[which],spec,w,instruments[which],
                                 z,(batchname),nbatch,mask_dicts[which])
-                        copy_loss = robust_loss(*args)
+                        copy_loss = augument_loss(*args)
                         valid_loss += 0.5*(loss.item()+copy_loss.item())
                     else:valid_loss += loss.item()
-                valid_loss /= (len(valid_batches[which])*batch_size)
+                valid_loss /= nsamples
                 
                 loss_ep[n_encoder*which+1] = valid_loss
                 if not mode['data'][which]:
@@ -617,7 +615,7 @@ def train(models, accelerator, instruments, train_batches,
         
         if not silent:
             print('====> Epoch: %i TRAINING Loss: %.2e,%.2e VALIDATION Loss: %.2e,%.2e' % (epoch, loss_ep[0], loss_ep[2],  loss_ep[1], loss_ep[3]))
-        
+        #exit()
         
         if epoch % 10 == 0 or epoch == n_epoch - 1:           
             
@@ -684,7 +682,6 @@ n_ids, n_dim = len(data_ids[0]),2
 
 #accelerator = Accelerator()
 accelerator = Accelerator(mixed_precision='fp16')
-batch_size=512
 
 uniform_njit = [100,300]
 mock_params = [[0.4,uniform_njit]]#,[0.1,uniform_njit]]
@@ -700,9 +697,9 @@ import random
 random_seed = 42
 random.seed(random_seed)
 
-alltrain = collect_batches("all",which="train",NBATCH=NBATCH)
+alltrain = collect_batches(datatag,which="train",NBATCH=NBATCH)
 jointtrain = collect_batches("joint",which="train",NBATCH=NBATCH)
-allvalid = collect_batches("all",which="valid",NBATCH=NBATCH)
+allvalid = collect_batches(datatag,which="valid",NBATCH=NBATCH)
 jointvalid = collect_batches("joint",which="valid",NBATCH=NBATCH)
 
 for j in range(n_encoder):  
