@@ -12,7 +12,7 @@ from torch import optim
 from torch.distributions.normal import Normal
 from torchinterp1d import Interp1d
 
-from util import load_data,skylines_mask
+from util import load_data,skylines_mask,permute_indices
 from emission_lines import *
 from batch_wrapper import wrap_batches, save_batch, LOGWAVE_RANGE
 from model import SpectrumAutoencoder, Instrument
@@ -21,7 +21,6 @@ import accelerate
 from accelerate import Accelerator
 #from memory_profiler import profile
 import humanize,psutil,GPUtil
-
 
 data_dir = "/scratch/gpfs/yanliang"
 dynamic_dir = "/scratch/gpfs/yanliang/dynamic-data"
@@ -61,13 +60,13 @@ def prepare_train(seq,niter=300):
 train_sequence=prepare_train([FULL])
 if "debug" in sys.argv:debug=True
 
-model_k = 4
+model_k = 11
 label = "%s/opt_norm-%s"%(savemodel,code)
 
 # model number
 # load from
 #label_ = label+".%d"%model_k
-label_ = label+".1"
+label_ = label+".9"
 
 class LogLinearDistribution():
     def __init__(self, a, bound):
@@ -434,6 +433,23 @@ def augument_loss(model,spec,w,instrument,z,copy_info,nbatch,mask):
 
     return loss
 
+# translates spectra similarity to latent space similarity
+def similarity_loss(spec,w,s,spec_var=10):
+    batch_size, s_size = s.shape
+    rand = permute_indices(batch_size)
+    new_w = 1/(w**(-1)+w[rand]**(-1))
+    D = (new_w > 0).sum(dim=1)
+    spec_sim = torch.sum(0.5*new_w*(spec[rand]-spec)**2/spec_var**2,dim=1)/D
+    s_sim = torch.sum(0.5*(s[rand]-s)**2,dim=1)/s_size
+    
+    sim_loss = torch.sum((spec_sim-s_sim)**2)
+    print("sim_loss:",sim_loss.item())
+    #plt.plot(spec_sim.detach().cpu(),s_sim.detach().cpu(),"k.")
+    #plt.savefig("similarity.png",dpi=120)
+    #exit()
+    return sim_loss
+
+
 def checkpoint(args,optimizer,scheduler,n_encoder,label):
     unwrapped = [accelerator.unwrap_model(args_i).state_dict()\
                  for args_i in args]
@@ -457,7 +473,7 @@ def checkpoint(args,optimizer,scheduler,n_encoder,label):
 def train(models, accelerator, instruments, train_batches, 
           valid_batches, n_epoch=200, label="", losses = [],
           silent=False, lr=1e-4, fp16=True, data_copy=True,
-          latent=True, mask_skyline=True):
+          latent=False, mask_skyline=True):
     
     model_parameters,n_parameters = get_all_parameters(models,instruments)
     
@@ -538,7 +554,16 @@ def train(models, accelerator, instruments, train_batches,
                 if not latent:
                     loss = models[which].loss(spec,w,instruments[which],z=z)
                     print("loss_spec:",loss.item())
+                    
+                    #s = models[which].encode(spec, w=w, z=z)
+                    #sim_loss = similarity_loss(spec,w,s)
+                    #loss += sim_loss
+                    
                     accelerator.backward(loss)
+                    
+                    s = models[which].encode(spec, w=w, z=z)
+                    sim_loss = similarity_loss(spec,w,s)
+                    accelerator.backward(sim_loss)
                     
                 # skip mock data loss
                 if not data_copy: 
@@ -559,7 +584,7 @@ def train(models, accelerator, instruments, train_batches,
                 else:
                     copy_loss = augument_loss(*args)
                     print("copy_loss:",copy_loss)
-                    batch_loss = 0.5*(loss+copy_loss)
+                    batch_loss = 0.5*(loss+copy_loss+sim_loss)
                     if np.isnan(batch_loss.item()):
                         print("nan!!")
                         print("spec:",spec.min(),spec.max())
