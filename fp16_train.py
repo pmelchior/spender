@@ -473,7 +473,7 @@ def checkpoint(args,optimizer,scheduler,n_encoder,label):
 def train(models, accelerator, instruments, train_batches, 
           valid_batches, n_epoch=200, label="", losses = [],
           silent=False, lr=1e-4, fp16=True, data_copy=True,
-          latent=False, mask_skyline=True):
+          latent=False, mask_skyline=True,similarity=False):
     
     model_parameters,n_parameters = get_all_parameters(models,instruments)
     
@@ -561,6 +561,7 @@ def train(models, accelerator, instruments, train_batches,
                     
                     accelerator.backward(loss)
                     
+                if similarity:
                     s = models[which].encode(spec, w=w, z=z)
                     sim_loss = similarity_loss(spec,w,s)
                     accelerator.backward(sim_loss)
