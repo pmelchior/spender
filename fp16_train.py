@@ -29,9 +29,9 @@ savemodel = "models"
 #data_file = ["%s/sdssrand_N74000_spectra.npz"%(data_dir),
 #             "%s/bossrand_N74000_spectra.npz"%(data_dir)]
 
-datatag = "all"
+datatag = "chunk1024"
 data_prefix = ["%s%s"%(i,datatag) for i in ["SDSS","BOSS"]]
-NBATCH = 100
+NBATCH = 250
 
 encoder_names = ["sdss","boss"]
 n_encoder = len(encoder_names)
@@ -39,7 +39,8 @@ skip=[False,False]
 
 debug = False
 option_normalize = True
-override_copies = False
+similarity = True
+
 code = "v2"
 n_latent = 2
 
@@ -60,13 +61,13 @@ def prepare_train(seq,niter=300):
 train_sequence=prepare_train([FULL])
 if "debug" in sys.argv:debug=True
 
-model_k = 11
-label = "%s/opt_norm-%s"%(savemodel,code)
+model_k = 1
+label = "%s/similarity-%s"%(savemodel,code)
 
 # model number
 # load from
 #label_ = label+".%d"%model_k
-label_ = label+".9"
+label_ = "./models/large-v2.1"
 
 class LogLinearDistribution():
     def __init__(self, a, bound):
@@ -262,7 +263,7 @@ def jitter_redshift(batch, params, inst):
     return batch_out
 
 def boss_sdss_id():
-    save_targets = "joint_headers.pkl"
+    save_targets = "/scratch/gpfs/yanliang/headers/joint_headers.pkl"
     f = open(save_targets,"rb")
     targets = pickle.load(f)
     f.close()
@@ -405,8 +406,10 @@ def augument_loss(model,spec,w,instrument,z,copy_info,nbatch,mask):
     s = model.encode(spec_copy, w=w_copy, z=z_copy)
     spec_rest = model.decoder.decode(s)
     
-     # variations of data copies
-    loss = 0
+
+    if similarity:loss = similarity_loss(spec_copy,w_copy,s)
+    else:loss = 0
+    
     for key in batch_copy:        
         if type(key)==str: continue
         begin,end = batch_copy[key]["range"]
@@ -433,21 +436,16 @@ def augument_loss(model,spec,w,instrument,z,copy_info,nbatch,mask):
 
     return loss
 
-# translates spectra similarity to latent space similarity
-def similarity_loss(spec,w,s,spec_var=10):
+def similarity_loss(spec,w,s, verbose=False):
     batch_size, s_size = s.shape
     rand = permute_indices(batch_size)
     new_w = 1/(w**(-1)+w[rand]**(-1))
     D = (new_w > 0).sum(dim=1)
-    spec_sim = torch.sum(0.5*new_w*(spec[rand]-spec)**2/spec_var**2,dim=1)/D
-    s_sim = torch.sum(0.5*(s[rand]-s)**2,dim=1)/s_size
-    
-    sim_loss = torch.sum((spec_sim-s_sim)**2)
-    print("sim_loss:",sim_loss.item())
-    #plt.plot(spec_sim.detach().cpu(),s_sim.detach().cpu(),"k.")
-    #plt.savefig("similarity.png",dpi=120)
-    #exit()
-    return sim_loss
+    spec_sim = torch.sum(new_w*(spec[rand]-spec)**2,dim=1)/D
+    s_sim = torch.sum((s[rand]-s)**2,dim=1)/s_size
+    sim_loss = torch.sigmoid(s_sim-spec_sim)
+    if verbose:return s_sim,spec_sim,sim_loss
+    else: return sim_loss.sum()
 
 
 def checkpoint(args,optimizer,scheduler,n_encoder,label):
@@ -473,7 +471,7 @@ def checkpoint(args,optimizer,scheduler,n_encoder,label):
 def train(models, accelerator, instruments, train_batches, 
           valid_batches, n_epoch=200, label="", losses = [],
           silent=False, lr=1e-4, fp16=True, data_copy=True,
-          latent=False, mask_skyline=True,similarity=False):
+          latent=False, mask_skyline=True,similarity=similarity):
     
     model_parameters,n_parameters = get_all_parameters(models,instruments)
     
@@ -554,18 +552,14 @@ def train(models, accelerator, instruments, train_batches,
                 if not latent:
                     loss = models[which].loss(spec,w,instruments[which],z=z)
                     print("loss_spec:",loss.item())
-                    
-                    #s = models[which].encode(spec, w=w, z=z)
-                    #sim_loss = similarity_loss(spec,w,s)
-                    #loss += sim_loss
-                    
                     accelerator.backward(loss)
                     
                 if similarity:
                     s = models[which].encode(spec, w=w, z=z)
                     sim_loss = similarity_loss(spec,w,s)
                     accelerator.backward(sim_loss)
-                    
+                else: sim_loss=0
+                
                 # skip mock data loss
                 if not data_copy: 
                     train_loss += loss.item()
@@ -632,11 +626,17 @@ def train(models, accelerator, instruments, train_batches,
                     #with torch.cuda.amp.autocast(enabled=fp16):
                     loss = models[which].loss(spec,w, instruments[which],z=z)
                     
+                    if similarity:
+                        s = models[which].encode(spec, w=w, z=z)
+                        sim_loss = similarity_loss(spec,w,s)
+                        accelerator.backward(sim_loss)
+                    else: sim_loss=0
+                    
                     if data_copy:
                         args = (models[which],spec,w,instruments[which],
                                 z,(batchname),nbatch,mask_dicts[which])
                         copy_loss = augument_loss(*args)
-                        valid_loss += 0.5*(loss.item()+copy_loss.item())
+                        valid_loss += 0.5*(loss.item()+copy_loss.item()+sim_loss.item())
                     else:valid_loss += loss.item()
                 valid_loss /= nsamples
                 
