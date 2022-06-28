@@ -61,13 +61,13 @@ def prepare_train(seq,niter=300):
 train_sequence=prepare_train([FULL])
 if "debug" in sys.argv:debug=True
 
-model_k = 1
+model_k = 2
 label = "%s/similarity-%s"%(savemodel,code)
 
 # model number
 # load from
-#label_ = label+".%d"%model_k
-label_ = "./models/large-v2.1"
+label_ = label+".%d"%1
+#label_ = "./models/large-v2.1"
 
 class LogLinearDistribution():
     def __init__(self, a, bound):
@@ -557,6 +557,7 @@ def train(models, accelerator, instruments, train_batches,
                 if similarity:
                     s = models[which].encode(spec, w=w, z=z)
                     sim_loss = similarity_loss(spec,w,s)
+                    print("sim_loss:",sim_loss.item())
                     accelerator.backward(sim_loss)
                 else: sim_loss=0
                 
@@ -625,11 +626,9 @@ def train(models, accelerator, instruments, train_batches,
                         w[maskmat]=1e-6
                     #with torch.cuda.amp.autocast(enabled=fp16):
                     loss = models[which].loss(spec,w, instruments[which],z=z)
-                    
                     if similarity:
                         s = models[which].encode(spec, w=w, z=z)
                         sim_loss = similarity_loss(spec,w,s)
-                        accelerator.backward(sim_loss)
                     else: sim_loss=0
                     
                     if data_copy:
