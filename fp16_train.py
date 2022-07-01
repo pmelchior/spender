@@ -52,7 +52,7 @@ D = {"data":[True,True],"encoder":[False,False],"decoder":True}
 SEBE = {"data":[True,True], "decoder":False}
 FULL = {"data":[True,True],"decoder":True}
 
-def prepare_train(seq,niter=300):
+def prepare_train(seq,niter=10):
     for d in seq:
         if not "iteration" in d:d["iteration"]=niter
         if not "encoder" in d:d.update({"encoder":d["data"]})
@@ -61,13 +61,13 @@ def prepare_train(seq,niter=300):
 train_sequence=prepare_train([FULL])
 if "debug" in sys.argv:debug=True
 
-model_k = 3
+model_k = 0
 label = "%s/similarity-%s"%(savemodel,code)
 
 # model number
 # load from
-#label_ = label+".%d"%2
-label_ = "./models/large-v2.1"
+label_ = label+".%d"%0
+#label_ = "./models/large-v2.1"
 
 class LogLinearDistribution():
     def __init__(self, a, bound):
@@ -443,8 +443,8 @@ def similarity_loss(spec,w,s,verbose=False):
     D = (new_w > 0).sum(dim=1)
     spec_sim = torch.sum(new_w*(spec[rand]-spec)**2,dim=1)/D
     s_sim = torch.sum((s[rand]-s)**2,dim=1)/s_size
-    sim_loss = torch.sigmoid(s_sim-spec_sim)
-    #sim_loss = 0.5-1/(torch.cosh(s_sim-spec_sim)+1)
+    #sim_loss = torch.sigmoid(s_sim-spec_sim)
+    sim_loss = 0.5-1/(torch.cosh(s_sim-spec_sim)+1)
     if verbose:return s_sim,spec_sim,sim_loss
     else: return sim_loss.sum()
 
@@ -476,12 +476,12 @@ def train(models, accelerator, instruments, train_batches,
     
     model_parameters,n_parameters = get_all_parameters(models,instruments)
     
-    torch.autograd.set_detect_anomaly(True)
+    #torch.autograd.set_detect_anomaly(True)
     print("model parameters:", n_parameters)
     mem_report()
     
     ladder = build_ladder(train_sequence)
-    optimizer = optim.Adam(model_parameters, lr=lr)
+    optimizer = optim.Adam(model_parameters, lr=lr, eps=1e-4)
     scheduler = optim.lr_scheduler.OneCycleLR(optimizer, lr, 
                                               total_steps=n_epoch)
     # NEW
@@ -557,12 +557,6 @@ def train(models, accelerator, instruments, train_batches,
                     print("loss_spec:",loss.item())
                     accelerator.backward(loss)
                     
-                for p in models[which].parameters():
-                    if torch.isnan(p.grad).sum()>0:
-                        print("NAN!", p.max(),p.min()) 
-                        exit()
-                    #else:print("normal:",p.grad.min(),
-                    #           p.grad.max())
                 if similarity:
                     s = models[which].encode(spec, w=w, z=z)
                     sim_loss = similarity_loss(spec,w,s)
@@ -601,6 +595,12 @@ def train(models, accelerator, instruments, train_batches,
                         print("s:",s.min(),s.max())
                         exit()
                     
+                for p in models[which].parameters():
+                    if torch.isnan(p.grad).sum()>0:
+                        print("NAN!", p.max(),p.min()) 
+                        #exit()
+                    else:print("normal:",p.grad.min(),
+                               p.grad.max())
                 train_loss += batch_loss.item()
                 
                 if k<nbatch:
@@ -609,7 +609,7 @@ def train(models, accelerator, instruments, train_batches,
                 
                 mem_report()
                 accelerator.backward(copy_loss)  
-                
+                torch.nn.utils.clip_grad_norm_(model_parameters[0]['params'],1.0)
                 # once per batch
                 optimizer.step()
                 optimizer.zero_grad()
