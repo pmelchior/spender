@@ -18,7 +18,7 @@ from batch_wrapper import wrap_batches, save_batch, LOGWAVE_RANGE
 from model import SpectrumAutoencoder, Instrument
 
 import accelerate
-from accelerate import Accelerator
+from accelerate import Accelerator, DeepSpeedPlugin
 #from memory_profiler import profile
 import humanize,psutil,GPUtil
 
@@ -29,9 +29,9 @@ savemodel = "models"
 #data_file = ["%s/sdssrand_N74000_spectra.npz"%(data_dir),
 #             "%s/bossrand_N74000_spectra.npz"%(data_dir)]
 
-datatag = "chunk1024"
+datatag = "all"#"chunk1024"
 data_prefix = ["%s%s"%(i,datatag) for i in ["SDSS","BOSS"]]
-NBATCH = 250
+NBATCH = 10#250
 
 encoder_names = ["sdss","boss"]
 n_encoder = len(encoder_names)
@@ -61,13 +61,13 @@ def prepare_train(seq,niter=300):
 train_sequence=prepare_train([FULL])
 if "debug" in sys.argv:debug=True
 
-model_k = 2
+model_k = 3
 label = "%s/similarity-%s"%(savemodel,code)
 
 # model number
 # load from
-label_ = label+".%d"%1
-#label_ = "./models/large-v2.1"
+#label_ = label+".%d"%2
+label_ = "./models/large-v2.1"
 
 class LogLinearDistribution():
     def __init__(self, a, bound):
@@ -379,7 +379,7 @@ def latent_loss(model,spec,w,instrument,z,copy_info,nbatch,mask,
     print("Time: %.2f s"%(tb-ta))
     return loss+lambda_latent*loss_lat
 
-def augument_loss(model,spec,w,instrument,z,copy_info,nbatch,mask):
+def augment_loss(model,spec,w,instrument,z,copy_info,nbatch,mask):
     ta = time.time()
     copyname = copy_info.split(".")[0] + "_copy.pkl"
     
@@ -409,7 +409,7 @@ def augument_loss(model,spec,w,instrument,z,copy_info,nbatch,mask):
 
     if similarity:loss = similarity_loss(spec_copy,w_copy,s)
     else:loss = 0
-    
+    print("[copy]similarity_loss:",loss)
     for key in batch_copy:        
         if type(key)==str: continue
         begin,end = batch_copy[key]["range"]
@@ -436,7 +436,7 @@ def augument_loss(model,spec,w,instrument,z,copy_info,nbatch,mask):
 
     return loss
 
-def similarity_loss(spec,w,s, verbose=False):
+def similarity_loss(spec,w,s,verbose=False):
     batch_size, s_size = s.shape
     rand = permute_indices(batch_size)
     new_w = 1/(w**(-1)+w[rand]**(-1))
@@ -444,6 +444,7 @@ def similarity_loss(spec,w,s, verbose=False):
     spec_sim = torch.sum(new_w*(spec[rand]-spec)**2,dim=1)/D
     s_sim = torch.sum((s[rand]-s)**2,dim=1)/s_size
     sim_loss = torch.sigmoid(s_sim-spec_sim)
+    #sim_loss = 0.5-1/(torch.cosh(s_sim-spec_sim)+1)
     if verbose:return s_sim,spec_sim,sim_loss
     else: return sim_loss.sum()
 
@@ -475,6 +476,7 @@ def train(models, accelerator, instruments, train_batches,
     
     model_parameters,n_parameters = get_all_parameters(models,instruments)
     
+    torch.autograd.set_detect_anomaly(True)
     print("model parameters:", n_parameters)
     mem_report()
     
@@ -506,6 +508,7 @@ def train(models, accelerator, instruments, train_batches,
     else: mask_dicts=[{}]*n_encoder
                 
     optimizer.zero_grad()
+    
     for epoch in range(n_epoch):
         
         loss_ep = np.zeros(4)
@@ -554,10 +557,19 @@ def train(models, accelerator, instruments, train_batches,
                     print("loss_spec:",loss.item())
                     accelerator.backward(loss)
                     
+                for p in models[which].parameters():
+                    if torch.isnan(p.grad).sum()>0:
+                        print("NAN!", p.max(),p.min()) 
+                        exit()
+                    #else:print("normal:",p.grad.min(),
+                    #           p.grad.max())
                 if similarity:
                     s = models[which].encode(spec, w=w, z=z)
                     sim_loss = similarity_loss(spec,w,s)
                     print("sim_loss:",sim_loss.item())
+                    print("s:",s.min(),s.max())
+                    
+                        
                     accelerator.backward(sim_loss)
                 else: sim_loss=0
                 
@@ -578,7 +590,7 @@ def train(models, accelerator, instruments, train_batches,
                     copy_loss = latent_loss(*args)
                     batch_loss = 0.5*copy_loss
                 else:
-                    copy_loss = augument_loss(*args)
+                    copy_loss = augment_loss(*args)
                     print("copy_loss:",copy_loss)
                     batch_loss = 0.5*(loss+copy_loss+sim_loss)
                     if np.isnan(batch_loss.item()):
@@ -586,6 +598,7 @@ def train(models, accelerator, instruments, train_batches,
                         print("spec:",spec.min(),spec.max())
                         print("w:",w.min(),w.max())
                         print("z:",z.min(),z.max())
+                        print("s:",s.min(),s.max())
                         exit()
                     
                 train_loss += batch_loss.item()
@@ -634,7 +647,7 @@ def train(models, accelerator, instruments, train_batches,
                     if data_copy:
                         args = (models[which],spec,w,instruments[which],
                                 z,(batchname),nbatch,mask_dicts[which])
-                        copy_loss = augument_loss(*args)
+                        copy_loss = augment_loss(*args)
                         valid_loss += 0.5*(loss.item()+copy_loss.item()+sim_loss.item())
                     else:valid_loss += loss.item()
                 valid_loss /= nsamples
@@ -713,6 +726,9 @@ n_ids, n_dim = len(data_ids[0]),2
 
 #accelerator = Accelerator()
 accelerator = Accelerator(mixed_precision='fp16')
+
+#deepspeed_plugin = DeepSpeedPlugin(zero_stage=2, gradient_accumulation_steps=2)
+#accelerator = Accelerator(fp16=True, deepspeed_plugin=deepspeed_plugin)
 
 uniform_njit = [100,300]
 mock_params = [[0.4,uniform_njit]]#,[0.1,uniform_njit]]

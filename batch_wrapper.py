@@ -134,15 +134,17 @@ def prepare_batch(input_list):
     return
 
 def wrap_batches(which,tag,k_range=[0,10],Nspec=1024):
+    header_dir = "/scratch/gpfs/yanliang/headers"
     headers = {0:"truncated-specobj.pkl",
                1:"boss_headers.pkl"}
     
     header_name = headers[which]
     if "joint" in tag:header_name = "joint_headers.pkl"
         
-    f = open(header_name,"rb")
+    f = open("%s/%s"%(header_dir,header_name),"rb")
     targets = pickle.load(f)
     f.close()
+    
     # all targets
     name = ["SDSS","BOSS"]
     id_names = ['PLATE','MJD','FIBERID',"Z","Z_ERR"]
@@ -176,7 +178,9 @@ def wrap_batches(which,tag,k_range=[0,10],Nspec=1024):
         input_list.append(args)
         #print("prepared batch %d/%d, time=%.2f"%(k,nbatch,tb-ta))
     
-    pool = mp.Pool(15)
+    n_pool = min(15,len(input_list))
+    print("%d processes..."%(n_pool))
+    pool = mp.Pool(n_pool)
     result = pool.map(func=prepare_batch, iterable=input_list)
     pool.close()
     pool.join()
@@ -191,7 +195,7 @@ LOGWAVE_RANGE = [[3.578, 3.97],[3.549, 4.0175]]
 if "batch_wrapper" in sys.argv[0]:
     which = int(sys.argv[1])
     tag = sys.argv[2]
-    wrap_batches(which,tag,k_range=[150,160])
+    wrap_batches(which,tag,k_range=[200,250],Nspec=1024)
     """
     lprofiler = LineProfiler()
     lprofiler.add_function(read_sdss_spectra)
