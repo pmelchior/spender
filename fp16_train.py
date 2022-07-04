@@ -31,7 +31,7 @@ savemodel = "models"
 
 datatag = "all"#"chunk1024"
 data_prefix = ["%s%s"%(i,datatag) for i in ["SDSS","BOSS"]]
-NBATCH = 10#250
+NBATCH = 300
 
 encoder_names = ["sdss","boss"]
 n_encoder = len(encoder_names)
@@ -52,7 +52,7 @@ D = {"data":[True,True],"encoder":[False,False],"decoder":True}
 SEBE = {"data":[True,True], "decoder":False}
 FULL = {"data":[True,True],"decoder":True}
 
-def prepare_train(seq,niter=10):
+def prepare_train(seq,niter=300):
     for d in seq:
         if not "iteration" in d:d["iteration"]=niter
         if not "encoder" in d:d.update({"encoder":d["data"]})
@@ -61,12 +61,12 @@ def prepare_train(seq,niter=10):
 train_sequence=prepare_train([FULL])
 if "debug" in sys.argv:debug=True
 
-model_k = 0
-label = "%s/similarity-%s"%(savemodel,code)
+model_k = 8
+label = "%s/vloss-%s"%(savemodel,code)
 
 # model number
 # load from
-label_ = label+".%d"%0
+label_ = label+".%d"%8
 #label_ = "./models/large-v2.1"
 
 class LogLinearDistribution():
@@ -404,10 +404,8 @@ def augment_loss(model,spec,w,instrument,z,copy_info,nbatch,mask):
     
     # encode the truncated mock data, super-sampled 
     s = model.encode(spec_copy, w=w_copy, z=z_copy)
-    spec_rest = model.decoder.decode(s)
-    
-
-    if similarity:loss = similarity_loss(spec_copy,w_copy,s)
+    if similarity:
+        loss = resample_sim(instrument,model,spec_copy,w_copy,z_copy,s)
     else:loss = 0
     print("[copy]similarity_loss:",loss)
     for key in batch_copy:        
@@ -419,7 +417,7 @@ def augment_loss(model,spec,w,instrument,z,copy_info,nbatch,mask):
         wave_rest = model.decoder.wave_rest.repeat(end-begin,1)
         
         # resample model on restframe data
-        spec_new = Interp1d()(wave_rest,spec_rest[begin:end],wave_z0)
+        spec_new = Interp1d()(wave_rest,model.decoder.decode(s)[begin:end],wave_z0)
         loss += model._loss(spec, w, spec_new)
     
     if debug:
@@ -436,19 +434,36 @@ def augment_loss(model,spec,w,instrument,z,copy_info,nbatch,mask):
 
     return loss
 
-def similarity_loss(spec,w,s,verbose=False):
+def resample_to_restframe(wave_obs,wave_rest,y,w,z):
+    wave_z = (wave_rest.unsqueeze(1)*(1 + z)).T
+    wave_obs = wave_obs.repeat(y.shape[0],1)
+    # resample restframe spectra on observed spectra
+    yrest = Interp1d()(wave_obs,y,wave_z)
+    wrest =  Interp1d()(wave_obs,w,wave_z)
+    msk = (wave_z<=wave_obs.min())|(wave_z>=wave_obs.max())
+    yrest[msk]=0
+    wrest[msk]=1e-6
+    return yrest,wrest
+
+def similarity_loss(spec,w,s,verbose=False,rand=[],wid=10):
     batch_size, s_size = s.shape
-    rand = permute_indices(batch_size)
+    if rand==[]:rand = permute_indices(batch_size)
     new_w = 1/(w**(-1)+w[rand]**(-1))
-    D = (new_w > 0).sum(dim=1)
+    D = (new_w > 1e-6).sum(dim=1)
     spec_sim = torch.sum(new_w*(spec[rand]-spec)**2,dim=1)/D
     s_sim = torch.sum((s[rand]-s)**2,dim=1)/s_size
-    #sim_loss = torch.sigmoid(s_sim-spec_sim)
-    sim_loss = 0.5-1/(torch.cosh(s_sim-spec_sim)+1)
+    x = s_sim-spec_sim
+    sim_loss = torch.sigmoid(x)+torch.sigmoid(-x-wid)
     if verbose:return s_sim,spec_sim,sim_loss
     else: return sim_loss.sum()
 
-
+def resample_sim(instrument,model,spec,w,z,s):
+    spec,w = resample_to_restframe(instrument.wave_obs,
+                                   model.decoder.wave_rest,
+                                   spec,w,z)
+    sim_loss = similarity_loss(spec,w,s)
+    return sim_loss
+    
 def checkpoint(args,optimizer,scheduler,n_encoder,label):
     unwrapped = [accelerator.unwrap_model(args_i).state_dict()\
                  for args_i in args]
@@ -462,7 +477,7 @@ def checkpoint(args,optimizer,scheduler,n_encoder,label):
         "instrument":instruments_unwrapped,
         "optimizer": optimizer.optimizer.state_dict(),
         # optimizer is an AcceleratedOptimizer object
-        "scaler": accelerator.scaler.state_dict(),
+        #"scaler": accelerator.scaler.state_dict(),
         "scheduler": scheduler.state_dict(),
         "n_latent":n_latent
     },f'{label}.pt')
@@ -552,20 +567,23 @@ def train(models, accelerator, instruments, train_batches,
                 print("[batch %d/%d,batch_size=%d]: begin"%(k,nbatch,batch_size))
                 mem_report()
 
+                
+                if similarity:
+                    s = models[which].encode(spec, w=w, z=z)
+                    
+                    sim_loss = resample_sim(instruments[which],models[which],
+                                            spec,w,z,s)
+                    print("sim_loss:",sim_loss.item())
+                    print("s:",s.min(),s.max())
+                    #accelerator.backward(sim_loss)
+                else: sim_loss=0
+                
                 if not latent:
                     loss = models[which].loss(spec,w,instruments[which],z=z)
                     print("loss_spec:",loss.item())
+                    loss += sim_loss
                     accelerator.backward(loss)
                     
-                if similarity:
-                    s = models[which].encode(spec, w=w, z=z)
-                    sim_loss = similarity_loss(spec,w,s)
-                    print("sim_loss:",sim_loss.item())
-                    print("s:",s.min(),s.max())
-                    
-                        
-                    accelerator.backward(sim_loss)
-                else: sim_loss=0
                 
                 # skip mock data loss
                 if not data_copy: 
@@ -586,7 +604,7 @@ def train(models, accelerator, instruments, train_batches,
                 else:
                     copy_loss = augment_loss(*args)
                     print("copy_loss:",copy_loss)
-                    batch_loss = 0.5*(loss+copy_loss+sim_loss)
+                    batch_loss = 0.5*(loss+copy_loss)
                     if np.isnan(batch_loss.item()):
                         print("nan!!")
                         print("spec:",spec.min(),spec.max())
@@ -599,8 +617,7 @@ def train(models, accelerator, instruments, train_batches,
                     if torch.isnan(p.grad).sum()>0:
                         print("NAN!", p.max(),p.min()) 
                         #exit()
-                    else:print("normal:",p.grad.min(),
-                               p.grad.max())
+                    else:print("norm:",p.grad.min(),p.grad.max())
                 train_loss += batch_loss.item()
                 
                 if k<nbatch:
@@ -609,7 +626,8 @@ def train(models, accelerator, instruments, train_batches,
                 
                 mem_report()
                 accelerator.backward(copy_loss)  
-                torch.nn.utils.clip_grad_norm_(model_parameters[0]['params'],1.0)
+                torch.nn.utils.clip_grad_norm_(\
+                model_parameters[0]['params'],1.0)
                 # once per batch
                 optimizer.step()
                 optimizer.zero_grad()
@@ -641,7 +659,8 @@ def train(models, accelerator, instruments, train_batches,
                     loss = models[which].loss(spec,w, instruments[which],z=z)
                     if similarity:
                         s = models[which].encode(spec, w=w, z=z)
-                        sim_loss = similarity_loss(spec,w,s)
+                        sim_loss = resample_sim(instruments[which],models[which],
+                                                spec,w,z,s)
                     else: sim_loss=0
                     
                     if data_copy:
