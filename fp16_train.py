@@ -61,13 +61,13 @@ def prepare_train(seq,niter=300):
 train_sequence=prepare_train([FULL])
 if "debug" in sys.argv:debug=True
 
-model_k = 8
-label = "%s/vloss-%s"%(savemodel,code)
+model_k = 2
+label = "%s/slope-%s"%(savemodel,code)
 
 # model number
 # load from
-label_ = label+".%d"%8
-#label_ = "./models/large-v2.1"
+label_ = label+".%d"%1
+#label_ = "./models/vloss-v2.11"
 
 class LogLinearDistribution():
     def __init__(self, a, bound):
@@ -407,7 +407,27 @@ def augment_loss(model,spec,w,instrument,z,copy_info,nbatch,mask):
     if similarity:
         loss = resample_sim(instrument,model,spec_copy,w_copy,z_copy,s)
     else:loss = 0
+    
     print("[copy]similarity_loss:",loss)
+    if torch.isnan(loss).sum()>0:
+        print("NAN similarity!!")
+        print("s_copy:",torch.isnan(s).sum(),s.min(),s.max())
+        print("spec_copy:",torch.isnan(spec_copy).sum(),
+              spec_copy.min(),spec_copy.max())
+        print("w_copy:",torch.isnan(w_copy).sum(),
+              w_copy.min(),w_copy.max())
+        print("z_copy:",torch.isnan(z_copy).sum(),
+              z_copy.min(),z_copy.max())
+        res = resample_sim(instrument,model,spec_copy,w_copy,z_copy,
+                           s,verbose=True)
+        
+        s_sim,spec_sim,sim_loss = res
+        print("s_sim:",s_sim,"spec_sim:",spec_sim,
+              "sim_loss:",sim_loss)
+        
+        
+        exit()
+    
     for key in batch_copy:        
         if type(key)==str: continue
         begin,end = batch_copy[key]["range"]
@@ -445,23 +465,23 @@ def resample_to_restframe(wave_obs,wave_rest,y,w,z):
     wrest[msk]=1e-6
     return yrest,wrest
 
-def similarity_loss(spec,w,s,verbose=False,rand=[],wid=10):
+def similarity_loss(spec,w,s,verbose=False,rand=[],wid=5,slope=0.5):
     batch_size, s_size = s.shape
     if rand==[]:rand = permute_indices(batch_size)
-    new_w = 1/(w**(-1)+w[rand]**(-1))
+    new_w = 1.0/(w**(-1)+w[rand]**(-1))
     D = (new_w > 1e-6).sum(dim=1)
-    spec_sim = torch.sum(new_w*(spec[rand]-spec)**2,dim=1)/D
+    spec_sim = torch.sum(new_w*(spec[rand]-spec)**2,dim=1)/max(D,1)
     s_sim = torch.sum((s[rand]-s)**2,dim=1)/s_size
     x = s_sim-spec_sim
-    sim_loss = torch.sigmoid(x)+torch.sigmoid(-x-wid)
+    sim_loss = torch.sigmoid(x)+torch.sigmoid(-slope*x-wid)
     if verbose:return s_sim,spec_sim,sim_loss
     else: return sim_loss.sum()
 
-def resample_sim(instrument,model,spec,w,z,s):
+def resample_sim(instrument,model,spec,w,z,s,verbose=False):
     spec,w = resample_to_restframe(instrument.wave_obs,
                                    model.decoder.wave_rest,
                                    spec,w,z)
-    sim_loss = similarity_loss(spec,w,s)
+    sim_loss = similarity_loss(spec,w,s,verbose=verbose)
     return sim_loss
     
 def checkpoint(args,optimizer,scheduler,n_encoder,label):
@@ -680,7 +700,7 @@ def train(models, accelerator, instruments, train_batches,
             print('====> Epoch: %i TRAINING Loss: %.2e,%.2e VALIDATION Loss: %.2e,%.2e' % (epoch, loss_ep[0], loss_ep[2],  loss_ep[1], loss_ep[3]))
         #exit()
         
-        if epoch % 10 == 0 or epoch == n_epoch - 1:           
+        if epoch % 5 == 0 or epoch == n_epoch - 1:           
             
             save_loss = np.array(losses)   
             np.save(f'{label}.losses.npy', save_loss)
