@@ -757,6 +757,7 @@ def similarity_loss(spec,w,s,verbose=False,rand=[],wid=5,slope=0.5):
     spec_sim = torch.sum(new_w*(spec[rand]-spec)**2,dim=1)/D
     s_sim = torch.sum((s[rand]-s)**2,dim=1)/s_size
     x = s_sim-spec_sim
+    #x = torch.sqrt(s_sim)-torch.sqrt(spec_sim)
     sim_loss = torch.sigmoid(x)+torch.sigmoid(-slope*x-wid)
     if verbose:return s_sim,spec_sim,sim_loss
     else: return sim_loss.sum()
@@ -783,7 +784,7 @@ for j in range(n_encoder):
 
 option_normalize = True
 #model_file = "models/similarity-v2.0"
-model_file = "models/anneal-v2.1"
+model_file = "models/anneal-v2.5"
 #model_file = "models/slope-v2.1"
 #model_file = back_dir + "backup_model_401"
 inspect_mix, loss = load_model("%s"%(model_file))
@@ -793,7 +794,7 @@ random_seed = 42
 random.seed(random_seed)
 
 testset = collect_batches("all",which="test",NBATCH=25)
-view = collect_batches("joint",which="test")
+view = collect_batches("joint",which=None)#,which="test")
 view[0] += testset[0]
 view[1] += testset[1]
 
@@ -867,7 +868,7 @@ if "model" in sys.argv:
     
 # background points
 np.random.seed(42)
-N = 1000
+N = 2000
 rand1 = np.random.randint(len(ids_sdss), size=N)
 rand2 = np.random.randint(len(ids_boss), size=N)
 
@@ -914,7 +915,7 @@ newz[newz<0]=0;newz[newz>0.5]=0.5
 #number = np.random.randint(100,300, size=len(newz))#[0,500,1000]#
 params = np.array([newz,number]).T
 
-interesting = [1]# 185,1,65
+interesting = [515]#[474,617,5234]#[2,3,4,5,6]# 185,1,65
 for wh_number in interesting:
     wh_sdss = [wh_joint_sdss[wh_number]]
     wh_boss = [wh_joint_boss[wh_number]]
@@ -977,13 +978,13 @@ for wh_number in interesting:
                    markers=["o","^","s"],color=colors, ax=ax9, mute=True, cmap=cmap)
     
     #xlim = (-0.2,5);ylim = (-0.2,6)
-    xlim = (-0.2,5);ylim = (-0.2,3)
+    xlim = (-0.2,7);ylim = (-0.2,3)
     
     ax9.set_xlim(xlim);ax9.set_ylim(ylim)
 
     text = "Data similarity:\nSDSS/BOSS as model: %.2f vs. %.2f\n"%(cross_loss[1],cross_loss[0])
     text += "SDSS/BOSS weight: %.2f vs. %.2f"%(mean_weights[0],mean_weights[1])
-    ax9.text(0.8,0.8*ylim[1],text,fontsize=20)
+    ax9.text(0.3*xlim[1],0.8*ylim[1],text,fontsize=20)
 
     ax = ax10
     wrest = wave_rest;msk = (wrest>3000)*(wrest<7500)
@@ -1037,9 +1038,9 @@ plot_embedding(embedded_batch,embed_color,name=name,comment=comment,
                cbar_label=cbar_label, c_range=c_range,cmap=cmap, zorder=zorder, alpha=alpha,
                markers=["o","^","s"],color=colors, ax=ax,mute=True)
 ax.set_title("Random joint targets (N=%d)"%n_joint)
-xlim = (-0.5,4);ylim = (-0.2,1.75)
+
 #ax.text(6,2,text,fontsize=15)
-ax.text(2,0.75,text,fontsize=15)
-#ax.set_xlim(xlim);ax.set_ylim(ylim)
+ax.text(0.1*xlim[1],0.5*ylim[1],text,fontsize=15)
+ax.set_xlim(xlim);ax.set_ylim(ylim)
 #plt.tight_layout()
 plt.savefig("[2D]%d-joint-targets.png"%(n_joint),dpi=200)

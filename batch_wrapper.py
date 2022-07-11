@@ -165,20 +165,21 @@ def wrap_batches(which,tag,k_range=[0,10],Nspec=1024):
     start_index = np.arange(start,end, Nspec)
     nbatch = len(start_index)
     
+    size = len(targets_slice[0])
     print("nbatch:",nbatch,"start_index:",start_index)
     
     code = "%s%s"%(name[which],tag)
     
     input_list = []
     for k,index in enumerate(start_index):
-        loc = range(index,index+3*Nspec)
+        loc = range(index,min(index+3*Nspec,size))
         print("loc:",len(loc),loc[:10])
         batch_targets=[item[loc] for item in targets_slice]
         args = [batch_targets,wave,code,index,Nspec]
         input_list.append(args)
         #print("prepared batch %d/%d, time=%.2f"%(k,nbatch,tb-ta))
     
-    n_pool = min(15,len(input_list))
+    n_pool = min(25,len(input_list))
     print("%d processes..."%(n_pool))
     pool = mp.Pool(n_pool)
     result = pool.map(func=prepare_batch, iterable=input_list)
@@ -195,7 +196,7 @@ LOGWAVE_RANGE = [[3.578, 3.97],[3.549, 4.0175]]
 if "batch_wrapper" in sys.argv[0]:
     which = int(sys.argv[1])
     tag = sys.argv[2]
-    wrap_batches(which,tag,k_range=[200,250],Nspec=1024)
+    wrap_batches(which,tag,k_range=[0,20],Nspec=256)
     """
     lprofiler = LineProfiler()
     lprofiler.add_function(read_sdss_spectra)

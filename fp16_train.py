@@ -29,7 +29,7 @@ savemodel = "models"
 #data_file = ["%s/sdssrand_N74000_spectra.npz"%(data_dir),
 #             "%s/bossrand_N74000_spectra.npz"%(data_dir)]
 
-datatag = "all"#"chunk1024"
+datatag = "chunk1024"#"all"#"chunk1024"
 data_prefix = ["%s%s"%(i,datatag) for i in ["SDSS","BOSS"]]
 NBATCH = 300
 
@@ -40,10 +40,12 @@ skip=[False,False]
 debug = False
 option_normalize = True
 similarity = True
-annealing_step = 0.02
-ANNEAL_SCHEDULE = np.arange(0,1,annealing_step)
+align_latents = True
+annealing_step = 0.05
+ANNEAL_SCHEDULE = np.arange(0.2,1,annealing_step)
+#ANNEAL_SCHEDULE = np.hstack((ANNEAL_SCHEDULE,np.ones(20)))
 print("similarity_slope:",len(ANNEAL_SCHEDULE),ANNEAL_SCHEDULE)
-#exit()
+
 
 code = "v2"
 n_latent = 2
@@ -58,7 +60,7 @@ FULL = {"data":[True,True],"decoder":True}
 
 
     
-def prepare_train(seq,niter=300):
+def prepare_train(seq,niter=400):
     for d in seq:
         if not "iteration" in d:d["iteration"]=niter
         if not "encoder" in d:d.update({"encoder":d["data"]})
@@ -67,13 +69,13 @@ def prepare_train(seq,niter=300):
 train_sequence=prepare_train([FULL])
 if "debug" in sys.argv:debug=True
     
-model_k = 1
+model_k = 0
 label = "%s/anneal-%s"%(savemodel,code)
 
 # model number
 # load from
-label_ = label+".%d"%0
-#label_ = "./models/slope-v2.1"
+#label_ = label+".%d"%5
+label_ = "./models/large-v2.1"
 
 class LogLinearDistribution():
     def __init__(self, a, bound):
@@ -339,20 +341,20 @@ def get_all_parameters(models,instruments):
         print("parameter dict:",dicts[1])
     return dicts,n_parameters
 
-def augment_loss(model,spec,w,instrument,z,copy_info,sim_info,mask):
-    ta = time.time()
+def augment_loss(model,spec,w,instrument,z,s_true,copy_info,sim_info,mask):
+    
     copyname = copy_info.split(".")[0] + "_copy.pkl"
     
     if os.path.isfile("%s/%s"%(dynamic_dir,copyname)):
         print("loading from", copyname)
         batch_copy = load_batch(copyname)
-        tb = time.time()
+        
     else: 
         print("saving to", copyname)
         batch_copy = jitter_redshift([spec,w,z],mock_params,instrument)
         save_batch(batch_copy,copyname)
-        tb = time.time()
-    print("Time: %.2f s"%(tb-ta))
+        
+    
     
     batch_copy = accelerator.prepare(batch_copy)
     spec_copy,w_copy,z_copy = batch_copy["batch"]
@@ -365,11 +367,25 @@ def augment_loss(model,spec,w,instrument,z,copy_info,sim_info,mask):
     # encode the truncated mock data, super-sampled 
     s = model.encode(spec_copy, w=w_copy, z=z_copy)
     if similarity:
+        ta = time.time()
         slope = sim_info
-        loss = resample_sim(instrument,model,spec_copy,w_copy,z_copy,s,slope=slope)
+        loss = resample_sim(instrument,model,spec_copy,w_copy,
+                            z_copy,s,slope=slope)
     else:loss = 0
+    tb = time.time()
+    print("[copy]similarity_loss: %.3f"%loss.item(),
+          "Time: %.2f s"%(tb-ta))
     
-    print("[copy]similarity_loss:",loss)
+    if align_latents:
+        # encode original spectra
+        #s_true = model.encode(spec, w=w, z=z)
+        loss += augment_similarity(s_true,s)
+        tb = time.time()
+        print("[copy]similarity+latent loss: %.3f"%loss.item(),
+              "Time: %.2f s"%(tb-ta))
+        #return loss
+    
+    
     if torch.isnan(loss).sum()>0:
         print("NAN similarity!!")
         print("s_copy:",torch.isnan(s).sum(),s.min(),s.max())
@@ -379,13 +395,14 @@ def augment_loss(model,spec,w,instrument,z,copy_info,sim_info,mask):
               w_copy.min(),w_copy.max())
         print("z_copy:",torch.isnan(z_copy).sum(),
               z_copy.min(),z_copy.max())
-        res = resample_sim(instrument,model,spec_copy,w_copy,z_copy,
+        res = resample_sim(instrument,model,
+                           spec_copy,w_copy,z_copy,
                            s,verbose=True)
-        
         s_sim,spec_sim,sim_loss = res
         print("s_sim:",s_sim,"spec_sim:",spec_sim,
               "sim_loss:",sim_loss)
         exit()
+    
     
     for key in batch_copy:        
         if type(key)==str: continue
@@ -394,6 +411,10 @@ def augment_loss(model,spec,w,instrument,z,copy_info,sim_info,mask):
         spec_new = model.decoder.transform(\
                    model.decoder.decode(s)[begin:end],instrument,z=z)
         loss += model._loss(spec, w, spec_new)
+    
+    tb = time.time()
+    print("[copy]similarity+latent+spec loss: %.3f"%loss.item(),
+          "Time: %.2f s"%(tb-ta))
     
     if debug:
         print("loss_copy:",loss.item())
@@ -410,6 +431,13 @@ def augment_loss(model,spec,w,instrument,z,copy_info,sim_info,mask):
 
     return loss
 
+def augment_similarity(s,s_copy,verbose=False):
+    batch_size, s_size = s.shape
+    x = torch.sum((s_copy-s)**2/1e-2,dim=1)/s_size
+    sim_loss = torch.sigmoid(x)-0.5 # zero = perfect alignment
+    if verbose:return x,sim_loss
+    else: return sim_loss.sum()
+
 def resample_to_restframe(wave_obs,wave_rest,y,w,z):
     wave_z = (wave_rest.unsqueeze(1)*(1 + z)).T
     wave_obs = wave_obs.repeat(y.shape[0],1)
@@ -421,7 +449,7 @@ def resample_to_restframe(wave_obs,wave_rest,y,w,z):
     wrest[msk]=1e-6
     return yrest,wrest
 
-def similarity_loss(spec,w,s,verbose=False,rand=[],wid=10,slope=0.5):
+def similarity_loss(spec,w,s,verbose=False,rand=[],wid=5,slope=0.5):
     batch_size, s_size = s.shape
     if rand==[]:rand = permute_indices(batch_size)
     new_w = 1.0/(w**(-1)+w[rand]**(-1))
@@ -546,9 +574,13 @@ def train(models, accelerator, instruments, train_batches,
                 batch_size = spec.shape[0]
                 nsamples += batch_size
                 print("[batch %d/%d,batch_size=%d]: begin"%(k,nbatch,batch_size))
-                mem_report()
+                mem_report()        
 
-                
+                loss = models[which].loss(spec,w,instruments[which],z=z)
+                print("loss_spec:",loss.item())
+                #loss += sim_loss
+                accelerator.backward(loss)
+
                 if similarity:
                     s = models[which].encode(spec, w=w, z=z)
                     
@@ -558,17 +590,11 @@ def train(models, accelerator, instruments, train_batches,
                     print("sim_loss:",sim_loss.item())
                     print("s:",s.min(),s.max())
                 else: sim_loss=0
-                
-
-                loss = models[which].loss(spec,w,instruments[which],z=z)
-                print("loss_spec:",loss.item())
-                loss += sim_loss
-                accelerator.backward(loss)
-
-                
+                    
                 # skip mock data loss
                 if not data_copy: 
-                    train_loss += loss.item()
+                    accelerator.backward(sim_loss)  
+                    train_loss += (loss+sim_loss).item()
                     
                     detailed_loss["train"][which][k][epoch] = loss.item()/batch_size
                     
@@ -577,9 +603,10 @@ def train(models, accelerator, instruments, train_batches,
                     continue
                     
                 args = (models[which],spec,w,instruments[which],
-                        z,(batchname),sim_info,mask_dicts[which])
+                        z,s,(batchname),sim_info,mask_dicts[which])
 
                 copy_loss = augment_loss(*args)
+                copy_loss += sim_loss
                 print("copy_loss:",copy_loss)
                 batch_loss = 0.5*(loss+copy_loss)
                 if np.isnan(batch_loss.item()):
@@ -644,7 +671,7 @@ def train(models, accelerator, instruments, train_batches,
                     
                     if data_copy:
                         args = (models[which],spec,w,instruments[which],
-                                z,(batchname),sim_info,mask_dicts[which])
+                                z,s,(batchname),sim_info,mask_dicts[which])
                         copy_loss = augment_loss(*args)
                         valid_loss += 0.5*(loss.item()+copy_loss.item()+sim_loss.item())
                     else:valid_loss += loss.item()
@@ -743,9 +770,9 @@ random_seed = 42
 random.seed(random_seed)
 
 alltrain = collect_batches(datatag,which="train",NBATCH=NBATCH)
-jointtrain = collect_batches("joint",which="train",NBATCH=NBATCH)
+jointtrain = collect_batches("joint256",which="train",NBATCH=NBATCH)
 allvalid = collect_batches(datatag,which="valid",NBATCH=NBATCH)
-jointvalid = collect_batches("joint",which="valid",NBATCH=NBATCH)
+jointvalid = collect_batches("joint256",which="valid",NBATCH=NBATCH)
 
 for j in range(n_encoder):  
     lower,upper = LOGWAVE_RANGE[j]
