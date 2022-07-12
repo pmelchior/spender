@@ -783,10 +783,8 @@ for j in range(n_encoder):
     instruments.append(inst)
 
 option_normalize = True
-#model_file = "models/similarity-v2.0"
-model_file = "models/anneal-v2.5"
-#model_file = "models/slope-v2.1"
-#model_file = back_dir + "backup_model_401"
+model_file = "models/dataonly-v2.1"
+#model_file = "models/anneal-v2.5"
 inspect_mix, loss = load_model("%s"%(model_file))
 ins_sdss,ins_boss = instruments
 
@@ -915,7 +913,7 @@ newz[newz<0]=0;newz[newz>0.5]=0.5
 #number = np.random.randint(100,300, size=len(newz))#[0,500,1000]#
 params = np.array([newz,number]).T
 
-interesting = [515]#[474,617,5234]#[2,3,4,5,6]# 185,1,65
+interesting = [2,3,4,5,474,617,5234]#[2,3,4,5,6]# 185,1,65
 for wh_number in interesting:
     wh_sdss = [wh_joint_sdss[wh_number]]
     wh_boss = [wh_joint_boss[wh_number]]
@@ -978,7 +976,7 @@ for wh_number in interesting:
                    markers=["o","^","s"],color=colors, ax=ax9, mute=True, cmap=cmap)
     
     #xlim = (-0.2,5);ylim = (-0.2,6)
-    xlim = (-0.2,7);ylim = (-0.2,3)
+    xlim = (-0.2,7);ylim = (-0.2,7)
     
     ax9.set_xlim(xlim);ax9.set_ylim(ylim)
 
