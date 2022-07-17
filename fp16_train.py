@@ -32,6 +32,7 @@ savemodel = "models"
 datatag = "chunk256"#"chunk1024"
 data_prefix = ["%s%s"%(i,datatag) for i in ["SDSS","BOSS"]]
 NBATCH = 300
+n_subsample = 50
 
 encoder_names = ["sdss","boss"]
 n_encoder = len(encoder_names)
@@ -68,7 +69,7 @@ def prepare_train(seq,niter=500):
 train_sequence=prepare_train([FULL])
 if "debug" in sys.argv:debug=True
     
-model_k = 1
+model_k = 2
 label = "%s/dataonly-%s"%(savemodel,code)
 
 # model number
@@ -512,11 +513,9 @@ def train(models, accelerator, instruments, train_batches,
     optimizer = prepared[-1]
     
     detailed_loss = {}
-    nwidth = max([len(train_batches[j]) for j in range(n_encoder)])
-    
-    
+
     if not "train" in detailed_loss:
-        detailed_loss["train"]=np.zeros((n_encoder,nwidth,n_epoch))
+        detailed_loss["train"]=np.zeros((n_encoder,n_subsample,n_epoch))
     
     if mask_skyline:
         mask_dicts = []
@@ -557,7 +556,11 @@ def train(models, accelerator, instruments, train_batches,
             train_loss = 0.
             nbatch = len(train_batches[which])
             
-            for k,batchname in enumerate(train_batches[which]):
+            # randomly select subsamples in each epoch!!
+            sub_samples = random.sample(train_batches[which],
+                                        n_subsample)
+            print("sub_samples:",sub_samples)
+            for k,batchname in enumerate(sub_samples):
 
                 #optimizer.zero_grad()
                 batch = load_batch(batchname)
@@ -571,7 +574,7 @@ def train(models, accelerator, instruments, train_batches,
                 
                 batch_size = spec.shape[0]
                 nsamples += batch_size
-                print("[batch %d/%d,batch_size=%d]: begin"%(k,nbatch,batch_size))
+                print("[batch %d/%d,batch_size=%d]: begin"%(k,n_subsample,batch_size))
                 mem_report()        
 
                 loss = models[which].loss(spec,w,instruments[which],z=z)
@@ -623,9 +626,7 @@ def train(models, accelerator, instruments, train_batches,
                     else:print("norm:",p.grad.min(),p.grad.max())
                 train_loss += batch_loss.item()
                 
-                if k<nbatch:
-                    print("k:",k,"nbatch:",nbatch)
-                    detailed_loss["train"][which][k][epoch] = batch_loss.item()
+                detailed_loss["train"][which][k][epoch] = batch_loss.item()
                 
                 mem_report()
                 accelerator.backward(copy_loss)  
@@ -794,7 +795,7 @@ for j in range(n_encoder):
     else:# for compatibility
         instruments[j].wave_obs = wave_obs[j]
         
-print("train:",train_batches,"valid:",valid_batches)
+print("train:",train_batches)#,"valid:",valid_batches)
 #exit()
 n_epoch = sum([item['iteration'] for item in train_sequence])
 print ("--- Model %d"%model_k)
