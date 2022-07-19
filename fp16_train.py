@@ -69,7 +69,7 @@ def prepare_train(seq,niter=500):
 train_sequence=prepare_train([FULL])
 if "debug" in sys.argv:debug=True
     
-model_k = 2
+model_k = 3
 label = "%s/dataonly-%s"%(savemodel,code)
 
 # model number
@@ -594,7 +594,12 @@ def train(models, accelerator, instruments, train_batches,
                     accelerator.backward(loss)  
                 else: # skip augments
                     mem_report()
+                    ta = time.time()
                     accelerator.backward(loss+sim_loss)  
+                    
+                    tb = time.time()
+                    print("Backward Time: %.2f"%(tb-ta))
+                    
                     train_loss += (loss+sim_loss).item()
                     detailed_loss["train"][which][k][epoch] = loss.item()/batch_size
                     
@@ -602,6 +607,10 @@ def train(models, accelerator, instruments, train_batches,
                     model_parameters[0]['params'],1.0)
                     optimizer.step()
                     optimizer.zero_grad()
+                    
+                    tb = time.time()
+                    print("Optimizer Step Time: %.2f"%(tb-ta))
+                    
                     continue
                     
                 args = (models[which],spec,w,instruments[which],
