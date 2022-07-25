@@ -69,13 +69,13 @@ def prepare_train(seq,niter=500):
 train_sequence=prepare_train([FULL])
 if "debug" in sys.argv:debug=True
     
-model_k = 3
-label = "%s/dataonly-%s"%(savemodel,code)
+model_k = 1
+label = "%s/cross-%s"%(savemodel,code)
 
 # model number
 # load from
-label_ = label+".%d"%0
-#label_ = "./models/large-v2.1"
+#label_ = label+".%d"%0
+label_ ="./models/dataonly-v2.1"
 
 class LogLinearDistribution():
     def __init__(self, a, bound):
@@ -443,7 +443,7 @@ def resample_to_restframe(wave_obs,wave_rest,y,w,z):
     # resample restframe spectra on observed spectra
     yrest = Interp1d()(wave_obs,y,wave_z)
     wrest =  Interp1d()(wave_obs,w,wave_z)
-    msk = (wave_z<=wave_obs.min())|(wave_z>=wave_obs.max())
+    msk = (wave_z<=wave_obs.min())|(wave_z>=wave_obs.max())|(wrest<0)
     yrest[msk]=0
     wrest[msk]=0
     return yrest,wrest
@@ -456,6 +456,21 @@ def similarity_loss(spec,w,s,verbose=False,rand=[],wid=5,slope=0.5):
     D[D<1]=1 # avoids NAN in loss function
     spec_sim = torch.sum(new_w*(spec[rand]-spec)**2,dim=1)/D
     s_sim = torch.sum((s[rand]-s)**2,dim=1)/s_size
+    x = s_sim-spec_sim
+    sim_loss = torch.sigmoid(x)+torch.sigmoid(-slope*x-wid)
+    if verbose:return s_sim,spec_sim,sim_loss
+    else: return sim_loss.sum()
+    
+def cross_similarity(spec,w,s,verbose=False,wid=5,slope=0.5):
+    batch_size, s_size = s[0].shape
+    new_w = torch.zeros_like(w[0])
+    msk = (w[0]>0) * (w[1]>0)
+    
+    new_w[msk] = 1.0/(w[0][msk]**(-1)+w[1][msk]**(-1))
+    D = (new_w > 0).sum(dim=1)
+    D[D<1]=1 # avoids NAN in loss function
+    spec_sim = torch.sum(new_w*(spec[0]-spec[1])**2,dim=1)/D
+    s_sim = torch.sum((s[0]-s[1])**2,dim=1)/s_size
     x = s_sim-spec_sim
     sim_loss = torch.sigmoid(x)+torch.sigmoid(-slope*x-wid)
     if verbose:return s_sim,spec_sim,sim_loss
@@ -491,7 +506,7 @@ def checkpoint(args,optimizer,scheduler,n_encoder,label):
 def train(models, accelerator, instruments, train_batches, 
           valid_batches, n_epoch=200, label="", losses = [],
           silent=False, lr=1e-4, fp16=True, data_copy=False,
-          mask_skyline=True, similarity=similarity):
+          mask_skyline=True, similarity=similarity,cross_similar=True):
     
     model_parameters,n_parameters = get_all_parameters(models,instruments)
     
@@ -528,7 +543,7 @@ def train(models, accelerator, instruments, train_batches,
     
     for epoch in range(n_epoch):
         
-        loss_ep = np.zeros(4)
+        loss_ep = np.zeros(5)
         
         mode = train_sequence[ladder[epoch]]
         
@@ -592,6 +607,7 @@ def train(models, accelerator, instruments, train_batches,
                     
                 if data_copy:
                     accelerator.backward(loss)  
+                    
                 else: # skip augments
                     mem_report()
                     ta = time.time()
@@ -633,6 +649,7 @@ def train(models, accelerator, instruments, train_batches,
                         print("NAN!", p.max(),p.min()) 
                         #exit()
                     else:print("norm:",p.grad.min(),p.grad.max())
+                        
                 train_loss += batch_loss.item()
                 
                 detailed_loss["train"][which][k][epoch] = batch_loss.item()
@@ -648,6 +665,62 @@ def train(models, accelerator, instruments, train_batches,
             train_loss /= nsamples
             loss_ep[n_encoder*which] = train_loss
             
+        # SDSS/BOSS cross similarity term ??
+        cross_loss = 0
+        if cross_similar:
+            sub_samples = [random.sample(train_batches[which],n_subsample)\
+                           for which in range(n_encoder)]
+                
+            for k in range(n_subsample):
+                batchnames = [sub_samples[which][k]\
+                              for which in range(n_encoder)]
+                
+                s = []
+                specs = []
+                ws = []
+                ta = time.time()
+                for which,batchname in enumerate(batchnames):
+                    batch = load_batch(batchname)
+                    spec, w, z = accelerator.prepare(batch)
+                    #batch_size = spec.shape[0]
+                    
+                    spec,w = resample_to_restframe(\
+                             instruments[which].wave_obs,
+                             models[which].decoder.wave_rest,
+                             spec,w,z)
+                    
+                    s.append(models[which].encode(spec, w=w, z=z))
+                    specs.append(spec)
+                    ws.append(w)
+                    
+                sim_loss = cross_similarity(specs,ws,s,verbose=False)
+                
+                if np.isnan(sim_loss.item()):
+                    print("nan!!")
+                    print("spec:",spec.min(),spec.max())
+                    print("w:",w.min(),w.max())
+                    print("z:",z.min(),z.max())
+                    print("s[0]",s[0].min(),s[0].max(),
+                          s[1].min(),s[1].max())
+                    exit()
+                
+                tb = time.time()
+                print("cross similarity Time: %.2f"%(tb-ta))
+                print("sim_loss:",sim_loss.item())       
+                accelerator.backward(sim_loss)  
+                cross_loss += sim_loss.item()
+                
+                tb = time.time()
+                print("Backward Call Time: %.2f"%(tb-ta))
+                torch.nn.utils.clip_grad_norm_(\
+                model_parameters[0]['params'],1.0)
+                optimizer.step()
+                optimizer.zero_grad()
+            
+            # cross loss
+            cross_loss /= nsamples
+            loss_ep[-1] = cross_loss
+                
         scheduler.step()
         with torch.no_grad():
             for which in range(n_encoder):
