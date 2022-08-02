@@ -170,9 +170,9 @@ class LogLinearDistribution():
 
 
 def insert_jitters(spec,number,slope=-1.32,bound=[0.0,2]):
+    device = spec.device
     number = int(number)
-    location = torch.randint(len(spec), device=device,
-                             size=(1,number)).squeeze(0)
+    location = torch.randint(len(spec), device=device, size=(1,number)).squeeze(0)
 
     loglinear = LogLinearDistribution(slope,bound)
     var = loglinear.inv_cdf(torch.rand(number,device=device))
@@ -189,6 +189,7 @@ def insert_jitters(spec,number,slope=-1.32,bound=[0.0,2]):
 def jitter_redshift(batch, params, inst):
     # original batch
     spec, w, true_z = batch
+    device = spec.device
     wave_obs = inst.wave_obs
 
     wave_mat = wave_obs*torch.ones_like(spec)
@@ -207,7 +208,7 @@ def jitter_redshift(batch, params, inst):
         z_lim, n_lim = param
 
         # uniform distribution
-        z_offset = z_lim*(2*torch.rand(batch_size,device=device)-1)
+        z_offset = z_lim*(2*torch.rand(batch_size, device=device)-1)
 
         n_jit = np.random.randint(n_lim[0],n_lim[1],
                                   size=batch_size)

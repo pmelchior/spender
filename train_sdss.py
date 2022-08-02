@@ -90,7 +90,7 @@ if __name__ == "__main__":
     wave_rest = torch.linspace(lmbda_min, lmbda_max, bins, dtype=torch.float32)
 
     # data loaders
-    trainloader = get_data_loader(args.dir, sdss.name, which="train", batch_size=args.batches)
+    trainloader = get_data_loader(args.dir, sdss.name, which="train", batch_size=args.batches, shuffle=True)
     validloader = get_data_loader(args.dir, sdss.name, which="valid", batch_size=args.batches)
 
     if args.verbose:

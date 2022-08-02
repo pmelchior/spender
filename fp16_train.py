@@ -2,11 +2,12 @@
 
 import time, argparse
 import numpy as np
-import pickle
+import functools
 import torch
 from torch import nn
 from torch import optim
 from accelerate import Accelerator
+from torchinterp1d import Interp1d
 
 from batch_wrapper import get_data_loader, collect_batches, load_batch, save_batch
 from instrument import get_instrument
@@ -111,7 +112,7 @@ def _losses(model,
     loss = model.loss(spec, w, instrument, z=z, s=s)
 
     if similarity:
-        sim_loss = resample_sim(instrument, model, spec, w, z, s, slope=slope)
+        sim_loss = similarity_loss(instrument, model, spec, w, z, s, slope=slope)
     else: sim_loss = 0
 
     return loss, sim_loss, s
@@ -130,11 +131,11 @@ def get_losses(model,
 
     if augmentation:
         batch_copy = jitter_redshift(batch, mock_params, instrument)
-        loss_, sim_loss_, s_ = _losses(model, instrument, batch_copy, similarity=similarity, slope=slope, mask_skyline=mask_skyline)
+        loss_, sim_loss_, s_ = _losses(model, instrument, batch_copy["batch"], similarity=similarity, slope=slope, mask_skyline=mask_skyline)
     else:
         loss_ = sim_loss_ = 0
 
-    if consistency:
+    if augmentation and consistency:
         cons_loss = consistency_loss(s, s_)
     else:
         cons_loss = 0
@@ -171,6 +172,7 @@ def train(models,
           mask_skyline=True,
           similarity=True,
           augmentation=True,
+          consistency=True,
           ):
 
     n_encoder = len(models)
@@ -186,7 +188,11 @@ def train(models,
                                               total_steps=n_epoch)
 
     accelerator = Accelerator(mixed_precision='fp16')
-    trainloaders, validloaders, models, instruments, optimizer = accelerator.prepare(trainloaders, validloaders, models, instruments, optimizer)
+    models = [accelerator.prepare(model) for model in models]
+    instruments = [accelerator.prepare(instrument) for instrument in instruments]
+    trainloaders = [accelerator.prepare(loader) for loader in trainloaders]
+    validloaders = [accelerator.prepare(loader) for loader in validloaders]
+    optimizer = accelerator.prepare(optimizer)
 
     # define losses to track
     n_loss = 5
@@ -201,7 +207,7 @@ def train(models,
             p.requires_grad = mode['decoder']
 
         slope = ANNEAL_SCHEDULE[epoch%len(ANNEAL_SCHEDULE)]
-        if verbose:
+        if verbose and similarity:
             print("similarity info:",slope)
 
         for which in range(n_encoder):
@@ -218,21 +224,22 @@ def train(models,
             instruments[which].train()
 
             nsample = 0
-            for k in range(n_subsample):
-                batch = next(trainloaders[which])
+            for k in range(n_batch):
+                batch = next(iter(trainloaders[which]))
                 batch_size = len(batch[0])
-                loss, sim_loss, loss_, sim_loss_, cons_loss = get_losses(
+                losses = get_losses(
                     models[which],
-                    instrument[which],
+                    instruments[which],
                     batch,
                     augmentation=augmentation,
                     similarity=similarity,
+                    consistency=consistency,
                     slope=slope,
                     mask_skyline=mask_skyline,
                 )
-                if verbose:
-                    mem_report()
-                accelerator.backward(loss + sim_loss + loss_ + sim_loss_)
+                # sum up all losses
+                loss = functools.reduce(lambda a, b: a+b , losses)
+                accelerator.backward(loss)
                 # clip gradients: stabilizes training with similarity
                 accelerator.clip_grad_norm_(model_parameters[0]['params'], 1.0)
                 # once per batch
@@ -240,7 +247,7 @@ def train(models,
                 optimizer.zero_grad()
 
                 # logging: training
-                detailed_loss[0][which][epoch] += (loss.item(), sim_loss.item(), loss_.item(), sim_loss_.item(), cons_loss.item())
+                detailed_loss[0][which][epoch] += tuple( l.item() if hasattr(l, 'item') else 0 for l in losses )
                 nsample += batch_size
 
         scheduler.step()
@@ -252,27 +259,29 @@ def train(models,
                 instruments[which].eval()
 
                 nsample = 0
-                for k in range(n_subsample):
-                    batch = next(validloaders[which])
+                for k in range(n_batch):
+                    batch = next(iter(validloaders[which]))
                     batch_size = len(batch[0])
-                    loss, sim_loss, loss_, sim_loss_ = get_losses(
+                    losses = get_losses(
                         models[which],
-                        instrument[which],
+                        instruments[which],
                         batch,
                         augmentation=augmentation,
                         similarity=similarity,
+                        consistency=consistency,
                         slope=slope,
                         mask_skyline=mask_skyline,
                     )
                     # logging: validation
-                    detailed_loss[1][which][epoch] += (loss.item(), sim_loss.item(), loss_.item(), sim_loss_.item(), cons_loss.item())
+                    detailed_loss[1][which][epoch] += tuple( l.item() if hasattr(l, 'item') else 0 for l in losses )
                     nsample += batch_size
 
             detailed_loss[1][which][epoch] /= nsample
 
         if verbose:
-            losses = tuple(detailed_loss[0, :, -1, :])
-            vlosses = tuple(detailed_loss[1, :, -1, :])
+            mem_report()
+            losses = tuple(detailed_loss[0, :, epoch, :])
+            vlosses = tuple(detailed_loss[1, :, epoch, :])
             print('====> Epoch: %i')
             print('TRAINING Losses:', losses)
             print('VALIDATION Losses:', vlosses)
@@ -289,7 +298,7 @@ if __name__ == "__main__":
     parser.add_argument("label", help="output file label")
     parser.add_argument("-o", "--outdir", help="output file directory", default=".")
     parser.add_argument("-n", "--latents", help="latent dimensionality", type=int, default=2)
-    parser.add_argument("-b", "--batches", help="batch size", type=int, default=1024)
+    parser.add_argument("-b", "--batches", help="batch size", type=int, default=512)
     parser.add_argument("-l", "--batch_number", help="number of batches per epoch", type=int, default=50)
     parser.add_argument("-r", "--rate", help="learning rate", type=float, default=1e-3)
     parser.add_argument("-a", "--augmentation", help="add augmentation loss", action="store_true")
@@ -328,7 +337,7 @@ if __name__ == "__main__":
 
     annealing_step = 0.05
     ANNEAL_SCHEDULE = np.arange(0.2,1,annealing_step)
-    if args.verbose:
+    if args.verbose and args.similarity:
         print("similarity_slope:",len(ANNEAL_SCHEDULE),ANNEAL_SCHEDULE)
 
     label = "%s/dataonly-%s.%d" % (args.outdir, args.label, args.latents)
