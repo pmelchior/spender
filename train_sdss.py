@@ -18,7 +18,7 @@ def train(model, instrument, trainloader, validloader, n_epoch=200, mask_skyline
     scheduler = optim.lr_scheduler.OneCycleLR(optimizer, lr, total_steps=n_epoch)
 
     accelerator = Accelerator(mixed_precision='fp16')
-    trainloader, validloader, instrument, optimizer = accelerator.prepare(trainloader, validloader, instrument, optimizer)
+    model, instrument, trainloader, validloader, optimizer = accelerator.prepare(model, instrument, trainloader, validloader, optimizer)
 
     losses = []
     for epoch in range(n_epoch):
