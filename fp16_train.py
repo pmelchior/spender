@@ -142,7 +142,7 @@ def get_losses(model,
     return loss, sim_loss, loss_, sim_loss_, cons_loss
 
 
-def checkpoint(accelerator, args, optimizer, scheduler, n_encoder, label):
+def checkpoint(accelerator, args, optimizer, scheduler, n_encoder, label, losses):
     unwrapped = [accelerator.unwrap_model(args_i).state_dict() for args_i in args]
 
     model_unwrapped = unwrapped[:n_encoder]
@@ -154,6 +154,7 @@ def checkpoint(accelerator, args, optimizer, scheduler, n_encoder, label):
         "instrument": instruments_unwrapped,
         "optimizer": optimizer.optimizer.state_dict(), # optimizer is an AcceleratedOptimizer object
         "scheduler": scheduler.state_dict(),
+        "losses": losses,
     }, f'{label}.pt')
     return
 
@@ -233,7 +234,7 @@ def train(models,
                     mem_report()
                 accelerator.backward(loss + sim_loss + loss_ + sim_loss_)
                 # clip gradients: stabilizes training with similarity
-                torch.nn.utils.clip_grad_norm_(model_parameters[0]['params'], 1.0)
+                accelerator.clip_grad_norm_(model_parameters[0]['params'], 1.0)
                 # once per batch
                 optimizer.step()
                 optimizer.zero_grad()
@@ -277,17 +278,16 @@ def train(models,
             print('VALIDATION Losses:', vlosses)
 
         if epoch % 5 == 0 or epoch == n_epoch - 1:
-            np.save(f'{label}.detail.npy', detailed_loss)
             args = models + instruments
-            checkpoint(accelerator, args, optimizer, scheduler, n_encoder, label)
+            checkpoint(accelerator, args, optimizer, scheduler, n_encoder, label, detailed_loss)
 
 
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("dir", help="data file directory")
-    parser.add_argument("outdir", help="output file directory")
-    parser.add_argument("label", help="output file labels")
+    parser.add_argument("label", help="output file label")
+    parser.add_argument("-o", "--outdir", help="output file directory", default=".")
     parser.add_argument("-n", "--latents", help="latent dimensionality", type=int, default=2)
     parser.add_argument("-b", "--batches", help="batch size", type=int, default=1024)
     parser.add_argument("-l", "--batch_number", help="number of batches per epoch", type=int, default=50)

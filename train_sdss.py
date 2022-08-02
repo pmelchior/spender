@@ -50,20 +50,28 @@ def train(model, instrument, trainloader, validloader, n_epoch=200, mask_skyline
         scheduler.step()
         losses.append((train_loss, valid_loss))
 
-        if epoch % 20 == 0 or epoch == n_epoch - 1:
-            if verbose:
-                print('====> Epoch: %i TRAINING Loss: %.2e VALIDATION Loss: %.2e' % (epoch, train_loss, valid_loss))
-
-            # checkpoints
-            torch.save(model, f'{label}.pt')
-            np.save(f'{label}.losses.npy', np.array(losses))
+        if verbose:
+            print('====> Epoch: %i TRAINING Loss: %.2e VALIDATION Loss: %.2e' % (epoch, train_loss, valid_loss))
+            
+        # checkpoints
+        if epoch % 5 == 0 or epoch == n_epoch - 1:
+            unwrapped_model = accelerator.unwrap_model(model)
+            unwrapped_instrument = accelerator.unwrap_model(instrument)
+            accelerator.save({
+                "model": unwrapped_model.state_dict(),
+                "instrument": unwrapped_instrument.state_dict(),
+                "optimizer": optimizer.optimizer.state_dict(),
+                "scheduler": scheduler.state_dict(),
+                "losses": losses,
+            }, f'{label}.pt')
 
 
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("dir", help="data file directory")
-    parser.add_argument("label", help="output file labels")
+    parser.add_argument("label", help="output file label")
+    parser.add_argument("-o", "--outdir", help="output file directory", default=".")
     parser.add_argument("-n", "--latents", help="latent dimensionality", type=int, default=2)
     parser.add_argument("-b", "--batches", help="batch size", type=int, default=1024)
     parser.add_argument("-e", "--epochs", help="number of epochs", type=int, default=200)
@@ -95,4 +103,5 @@ if __name__ == "__main__":
             n_latent=args.latents,
             normalize=True,
     )
-    train(model, sdss, trainloader, validloader, n_epoch=args.epochs, label=args.label, lr=args.rate, verbose=args.verbose)
+    label = f'{args.outdir}/{args.label}.{args.latents}'
+    train(model, sdss, trainloader, validloader, n_epoch=args.epochs, label=label, lr=args.rate, verbose=args.verbose)
