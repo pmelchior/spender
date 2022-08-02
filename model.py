@@ -3,39 +3,6 @@ import torch
 from torch import nn
 from torchinterp1d import Interp1d
 
-
-# Redshift distribution from histogram
-class RedshiftPrior(nn.Module):
-    def __init__(self,
-                 zbins,
-                 pz,
-                ):
-
-        super(RedshiftPrior, self).__init__()
-
-        # register tensors on the same dives as the entire model
-        self.register_buffer('zbins', zbins)
-
-        # extend counts to provide an "empty" bin for extreme values outside of the histogram
-        pz_ = torch.empty(len(zbins))
-        pz_[0] = 1e-16
-        pz_[1:] = pz / pz.sum()
-        self.register_buffer('pz', pz_)
-
-    def forward(self, z):
-        loc = torch.argmin((z.unsqueeze(1) > self.zbins).float(), axis=1)
-        return self.pz[loc]
-
-    def log_prob(self, z):
-        return torch.log(self.forward(z))
-
-    def sample(self, size=1):
-        idx = self.pz.multinomial(num_samples=size, replacement=True) - 1
-        u = torch.rand(size)
-        z_ = self.zbins[idx] + u * (self.zbins[idx + 1] - self.zbins[idx])
-        return z_
-
-
 #### Simple MLP ####
 class MLP(nn.Module):
     def __init__(self,
@@ -225,12 +192,12 @@ class BaseAutoencoder(nn.Module):
             spectrum_observed = self._normalize(x, spectrum_observed, w=w)
         return s, spectrum_restframe, spectrum_observed
 
-    def forward(self, x, w=None, instrument=None, z=None):
-        s, spectrum_restframe, spectrum_observed = self._forward(x, w=w,  instrument=instrument, z=z)
+    def forward(self, x, w=None, instrument=None, z=None, s=None):
+        s, spectrum_restframe, spectrum_observed = self._forward(x, w=w,  instrument=instrument, z=z, s=s)
         return spectrum_observed
 
-    def loss(self, x, w, instrument=None, z=None, individual=False):
-        spectrum_observed = self.forward(x, w=w, instrument=instrument, z=z)
+    def loss(self, x, w, instrument=None, z=None, s=None, individual=False):
+        spectrum_observed = self.forward(x, w=w, instrument=instrument, z=z, s=s)
         return self._loss(x, w, spectrum_observed, individual=individual)
 
     def _loss(self, x, w, spectrum_observed, individual=False):
@@ -284,33 +251,3 @@ class SpectrumAutoencoder(BaseAutoencoder):
             decoder,
             normalize=normalize,
         )
-
-
-class Instrument(nn.Module):
-    def __init__(self,
-                 wave_obs,
-                 lsf=None,
-                 calibration=None,
-                ):
-
-        super(Instrument, self).__init__()
-
-        # register wavelength tensors on the same device as the entire model
-        self.register_buffer('wave_obs', wave_obs)
-
-        self.lsf = lsf
-        self.calibration = calibration
-
-    def set_lsf(self, lsf_kernel, wave_kernel, wave_rest, requires_grad=False):
-        # resample in wave_rest pixels
-        h = (wave_rest.max() - wave_rest.min()) / len(wave_rest)
-        wave_kernel_rest = torch.arange(wave_kernel.min().floor(), wave_kernel.max().ceil(), h)
-        # make sure kernel has odd length for padding 'same'
-        if len(wave_kernel_rest) % 2 == 0:
-            wave_kernel_rest = torch.cat((wave_kernel_rest, torch.tensor([wave_kernel_rest.max() + h,])), 0)
-        lsf_kernel_rest = Interp1d()(wave_kernel, lsf_kernel, wave_kernel_rest)
-        lsf_kernel_rest /= lsf_kernel_rest.sum()
-
-        # construct conv1d layer
-        self.lsf = nn.Conv1d(1, 1, len(lsf_kernel_rest), bias=False, padding='same')
-        self.lsf.weight = nn.Parameter(lsf_kernel_rest.flip(0).reshape(1,1,-1), requires_grad=requires_grad)
