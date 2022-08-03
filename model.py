@@ -206,11 +206,12 @@ class BaseAutoencoder(nn.Module):
         # in every unmasked bin, then loss = 1 per object
         D = (w > 0).sum(dim=1)
         loss_ind = torch.sum(0.5 * w * (x - spectrum_observed).pow(2), dim=1)
+        loss_ind[D==0] = 0
 
         if individual:
-            return loss_ind / D
+            return loss_ind
 
-        return torch.sum(loss_ind / D)
+        return torch.sum(loss_ind)
 
     def _normalize(self, x, m, w=None):
         # apply constant factor c that minimizes (c*m - x)^2

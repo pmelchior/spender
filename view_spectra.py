@@ -5,10 +5,11 @@ import numpy as np
 import pickle
 import torch
 from torchinterp1d import Interp1d
-from util import load_data,skylines_mask,permute_indices
+from util import skylines_mask,permute_indices
 from emission_lines import *
-from batch_wrapper import wrap_batches, save_batch, LOGWAVE_RANGE
-from model import SpectrumAutoencoder, Instrument
+from batch_wrapper import wrap_batches, save_batch
+from model import SpectrumAutoencoder
+from instrument import get_instrument,Instrument
 #from memory_profiler import profile
 import humanize,psutil,GPUtil
 import matplotlib.pyplot as plt
@@ -81,15 +82,12 @@ def load_model(fileroot,n_latent=10):
             loadm.load_state_dict(m)
             loadm.eval()
             model.append(loadm)
-            
-        for ins in instruments:
-            empty=Instrument(wave_obs=None, calibration=None)
-            model.append(empty)
-        
+
     else: model.eval()
-    path = f'{fileroot}.losses.npy'
-    loss = np.load(path)
-    print (f"model {fileroot}: iterations {len(loss)}, final loss: {loss[-1]}")
+
+    loss =  mdict["losses"]
+    _, n_encoder, n_epoch, n_loss = loss.shape
+    print (f"model {fileroot}: iterations {n_epoch}")
     return model, loss
 
 def sdss_name(plate, mjd, fiberid):
@@ -158,6 +156,7 @@ def sdss2boss(sdss_list):
     return np.array(boss_list)
         
 def plot_loss(loss, ax=None,xlim=None,ylim=None,fs=15):
+    print("loss:",loss)
     latest = loss[:2,-1]
     ep = range(len(loss[0]))
     
@@ -771,22 +770,21 @@ def prepare_data(view,wave,mask_skyline = True):
         data[1][maskmat]=1e-6
     return data
 #-------------------------------------------------------
-from batch_wrapper import LOGWAVE_RANGE
+from instrument import get_instrument
 
-n_encoder = 2
-
-instruments = []
-for j in range(n_encoder):
-    lower,upper = LOGWAVE_RANGE[j]
-    wave_obs = 10**torch.arange(lower, upper, 0.0001)
-    inst = Instrument(wave_obs,calibration=None)
-    instruments.append(inst)
+instrument_names = ["SDSS", "BOSS"]
+instruments = [ get_instrument(name) for name in instrument_names ]
+ins_sdss,ins_boss = instruments
+n_encoder = len(instrument_names)
 
 option_normalize = True
-model_file = "models/dataonly-v2.1"
+model_file = "dataonly-debug.2"
 #model_file = "models/anneal-v2.5"
-inspect_mix, loss = load_model("%s"%(model_file))
-ins_sdss,ins_boss = instruments
+inspect_mix, loss = load_model("%s"%(model_file),n_latent=2)
+epoch = max(np.nonzero(loss[0][0])[0])+1
+print("loss:",loss.shape,"epoch:",epoch)
+print("Train BOSS :", loss[0][1][:3])
+print("Valid BOSS :", loss[1][1][:3])
 
 random_seed = 42
 random.seed(random_seed)
@@ -824,11 +822,15 @@ if "model" in sys.argv:
     # visualize 10 latent space
     fig,axs = plt.subplots(1,3,figsize=(8,4),dpi=200,constrained_layout=True,
                            gridspec_kw={'width_ratios': [1.5, 1, 1]})
-
-    loss = loss.T
-    epoch = loss.shape[1]
-    print("\n\n",model_file)
-    plot_loss(loss,ax=axs[0],fs=10)
+    
+    losses = np.zeros((4,epoch))
+    losses[0] = loss[0][0][:epoch].sum(axis=1)
+    losses[1] = loss[1][0][:epoch].sum(axis=1)
+    losses[2] = loss[0][1][:epoch].sum(axis=1)
+    losses[3] = loss[1][1][:epoch].sum(axis=1)
+    
+    print("\n\n",model_file,"losses:",losses.shape)
+    plot_loss(losses,ax=axs[0],fs=10)
     
     np.random.seed(23)#42 
     rand = np.random.randint(len(wh_joint_sdss), size=10)
@@ -859,7 +861,7 @@ if "model" in sys.argv:
         ax.set_xticks([]);ax.set_yticks([])
 
     #axs[0].set_ylim(0.5,1)
-    axs[0].set_title("($n_{latent}=%d$) best loss = %.2f"%(s_size,min(loss[1])))
+    axs[0].set_title("($n_{latent}=%d$) best loss = %.2f"%(s_size,min(losses[1])))
     plt.savefig("check_model.png",dpi=200)
     
     if "alone" in sys.argv:exit()

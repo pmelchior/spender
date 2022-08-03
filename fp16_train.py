@@ -15,7 +15,7 @@ from model import SpectrumAutoencoder
 from util import load_model, permute_indices, mem_report, LogLinearDistribution, insert_jitters, jitter_redshift
 
 
-def prepare_train(seq,niter=500):
+def prepare_train(seq,niter=10):
     for d in seq:
         if not "iteration" in d:d["iteration"]=niter
         if not "encoder" in d:d.update({"encoder":d["data"]})
@@ -84,7 +84,7 @@ def _similarity_loss(spec,w,s,individual=False,rand=[],wid=5,slope=0.5):
     spec_sim = torch.sum(new_w*(spec[rand]-spec)**2,dim=1)/D
     s_sim = torch.sum((s[rand]-s)**2,dim=1)/s_size
     x = s_sim-spec_sim
-    sim_loss = torch.sigmoid(x)+torch.sigmoid(-slope*x-wid)
+    sim_loss = (torch.sigmoid(x)+torch.sigmoid(-slope*x-wid))*D
     if individual:
         return s_sim,spec_sim,sim_loss
     return sim_loss.sum()
@@ -247,7 +247,7 @@ def train(models,
 
                 # logging: training
                 detailed_loss[0][which][epoch] += tuple( l.item() if hasattr(l, 'item') else 0 for l in losses )
-                n_sample += batch_size
+                n_sample += (batch[1] > 0).sum().item()
 
                 # stop after n_batch
                 if n_batch is not None and k == n_batch - 1:
@@ -261,7 +261,7 @@ def train(models,
                 models[which].eval()
                 instruments[which].eval()
 
-                nsample = 0
+                n_sample = 0
                 for k, batch in enumerate(validloaders[which]):
                     batch_size = len(batch[0])
                     losses = get_losses(
@@ -276,19 +276,19 @@ def train(models,
                     )
                     # logging: validation
                     detailed_loss[1][which][epoch] += tuple( l.item() if hasattr(l, 'item') else 0 for l in losses )
-                    nsample += batch_size
+                    n_sample += (batch[1] > 0).sum().item()
 
                     # stop after n_batch
                     if n_batch is not None and k == n_batch - 1:
                         break
 
-            detailed_loss[1][which][epoch] /= nsample
+            detailed_loss[1][which][epoch] /= n_sample
 
         if verbose:
             mem_report()
             losses = tuple(detailed_loss[0, :, epoch, :])
             vlosses = tuple(detailed_loss[1, :, epoch, :])
-            print('====> Epoch: %i')
+            print('====> Epoch: %i'%(epoch))
             print('TRAINING Losses:', losses)
             print('VALIDATION Losses:', vlosses)
 
