@@ -223,9 +223,8 @@ def train(models,
             models[which].train()
             instruments[which].train()
 
-            nsample = 0
-            for k in range(n_batch):
-                batch = next(iter(trainloaders[which]))
+            n_sample = 0
+            for k, batch in enumerate(trainloaders[which]):
                 batch_size = len(batch[0])
                 losses = get_losses(
                     models[which],
@@ -248,10 +247,14 @@ def train(models,
 
                 # logging: training
                 detailed_loss[0][which][epoch] += tuple( l.item() if hasattr(l, 'item') else 0 for l in losses )
-                nsample += batch_size
+                n_sample += batch_size
+
+                # stop after n_batch
+                if n_batch is not None and k == n_batch - 1:
+                    break
 
         scheduler.step()
-        detailed_loss[0][which][epoch] /= nsample
+        detailed_loss[0][which][epoch] /= n_sample
 
         with torch.no_grad():
             for which in range(n_encoder):
@@ -259,8 +262,7 @@ def train(models,
                 instruments[which].eval()
 
                 nsample = 0
-                for k in range(n_batch):
-                    batch = next(iter(validloaders[which]))
+                for k, batch in enumerate(validloaders[which]):
                     batch_size = len(batch[0])
                     losses = get_losses(
                         models[which],
@@ -275,6 +277,10 @@ def train(models,
                     # logging: validation
                     detailed_loss[1][which][epoch] += tuple( l.item() if hasattr(l, 'item') else 0 for l in losses )
                     nsample += batch_size
+
+                    # stop after n_batch
+                    if n_batch is not None and k == n_batch - 1:
+                        break
 
             detailed_loss[1][which][epoch] /= nsample
 
@@ -298,8 +304,8 @@ if __name__ == "__main__":
     parser.add_argument("label", help="output file label")
     parser.add_argument("-o", "--outdir", help="output file directory", default=".")
     parser.add_argument("-n", "--latents", help="latent dimensionality", type=int, default=2)
-    parser.add_argument("-b", "--batches", help="batch size", type=int, default=512)
-    parser.add_argument("-l", "--batch_number", help="number of batches per epoch", type=int, default=50)
+    parser.add_argument("-b", "--batch_size", help="batch size", type=int, default=512)
+    parser.add_argument("-l", "--batch_number", help="number of batches per epoch", type=int, default=None)
     parser.add_argument("-r", "--rate", help="learning rate", type=float, default=1e-3)
     parser.add_argument("-a", "--augmentation", help="add augmentation loss", action="store_true")
     parser.add_argument("-s", "--similarity", help="add similarity loss", action="store_true")
@@ -322,8 +328,8 @@ if __name__ == "__main__":
         print ("Restframe:\t{:.0f} .. {:.0f} A ({} bins)".format(lmbda_min, lmbda_max, bins))
 
     # data loaders
-    trainloaders = [ get_data_loader(args.dir, name, which="train", shuffle=True, batch_size=args.batches) for name in instrument_names ]
-    validloaders = [ get_data_loader(args.dir, name, which="valid", batch_size=args.batches) for name in instrument_names ]
+    trainloaders = [ get_data_loader(args.dir, name, which="train",  batch_size=args.batch_size, shuffle=True) for name in instrument_names ]
+    validloaders = [ get_data_loader(args.dir, name, which="valid", batch_size=args.batch_size) for name in instrument_names ]
 
     # define training sequence
     SED = {"data":[True,False], "decoder":True}

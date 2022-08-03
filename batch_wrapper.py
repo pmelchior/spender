@@ -7,7 +7,7 @@ import multiprocessing as mp
 import pickle, random
 import torch
 from torch.utils.data import IterableDataset, DataLoader
-from itertools import cycle, chain
+from itertools import chain
 
 from util import get_norm, mem_report
 
@@ -38,11 +38,10 @@ def load_batch(batch_name):
 # based on https://medium.com/speechmatics/how-to-build-a-streaming-dataloader-with-pytorch-a66dd891d9dd
 class BatchedFilesDataset(IterableDataset):
 
-    def __init__(self, file_list, shuffle=False, repeat=False):
+    def __init__(self, file_list, shuffle=False):
         assert len(file_list), "File list cannot be empty"
         self.file_list = file_list
         self.shuffle = shuffle
-        self.repeat = repeat
 
     def process_data(self, idx):
         if self.shuffle:
@@ -53,8 +52,6 @@ class BatchedFilesDataset(IterableDataset):
             yield x
 
     def get_stream(self):
-        if self.repeat:
-            return chain.from_iterable(map(self.process_data, cycle(range(len(self.file_list)))))
         return chain.from_iterable(map(self.process_data, range(len(self.file_list))))
 
     def __iter__(self):
@@ -80,10 +77,10 @@ def collect_batches(dir, name, tag="chunk1024", which=None):
     elif which == "train": return train_batches
     else: return all_batches
 
-def get_data_loader(dir, name, tag="chunk1024", which=None, batch_size=1024, shuffle=False, repeat=False):
+def get_data_loader(dir, name, tag="chunk1024", which=None, batch_size=1024, shuffle=False):
     files = collect_batches(dir, name, tag=tag, which=which)
     # load data on demand, random order
-    data = BatchedFilesDataset(files, shuffle=shuffle, repeat=repeat)
+    data = BatchedFilesDataset(files, shuffle=shuffle)
     return DataLoader(data, batch_size=batch_size)
 
 

@@ -12,7 +12,7 @@ from instrument import get_instrument
 from model import SpectrumAutoencoder
 
 
-def train(model, instrument, trainloader, validloader, n_epoch=200, mask_skyline=True, label="", verbose=False, lr=3e-4):
+def train(model, instrument, trainloader, validloader, n_epoch=200, n_batch=None, mask_skyline=True, label="", verbose=False, lr=3e-4):
 
     optimizer = optim.Adam(model.parameters(), lr=lr)
     scheduler = optim.lr_scheduler.OneCycleLR(optimizer, lr, total_steps=n_epoch)
@@ -21,38 +21,51 @@ def train(model, instrument, trainloader, validloader, n_epoch=200, mask_skyline
     model, instrument, trainloader, validloader, optimizer = accelerator.prepare(model, instrument, trainloader, validloader, optimizer)
 
     losses = []
+    n_sample = 0
     for epoch in range(n_epoch):
         model.train()
         train_loss = 0.
-        for batch in trainloader:
+        for k, batch in enumerate(trainloader):
+            batch_size = len(batch[0])
             spec, w, z = batch
+
             if mask_skyline:
                 w[:, instrument.skyline_mask] = 0
 
             loss = model.loss(spec, w, instrument=instrument, z=z)
             accelerator.backward(loss)
             train_loss += loss.item()
+            n_sample += batch_size
             optimizer.step()
             optimizer.zero_grad()
-        train_loss /= len(trainloader.dataset)
+
+            # stop after n_batch
+            if n_batch is not None and k == n_batch - 1:
+                break
+        train_loss /= n_sample
 
         with torch.no_grad():
             model.eval()
             valid_loss = 0.
-            for batch in validloader:
+            for k, batch in enumerate(validloader):
+                batch_size = len(batch[0])
                 spec, w, z = batch
                 if mask_skyline:
                     w[:, instrument.skyline_mask] = 0
                 loss = model.loss(spec, w, instrument=instrument, z=z)
                 valid_loss += loss.item()
-            valid_loss /= len(validloader.dataset)
+                n_sample += batch_size
+                # stop after n_batch
+                if n_batch is not None and k == n_batch - 1:
+                    break
+            valid_loss /= n_sample
 
         scheduler.step()
         losses.append((train_loss, valid_loss))
 
         if verbose:
             print('====> Epoch: %i TRAINING Loss: %.2e VALIDATION Loss: %.2e' % (epoch, train_loss, valid_loss))
-            
+
         # checkpoints
         if epoch % 5 == 0 or epoch == n_epoch - 1:
             unwrapped_model = accelerator.unwrap_model(model)
@@ -73,7 +86,8 @@ if __name__ == "__main__":
     parser.add_argument("label", help="output file label")
     parser.add_argument("-o", "--outdir", help="output file directory", default=".")
     parser.add_argument("-n", "--latents", help="latent dimensionality", type=int, default=2)
-    parser.add_argument("-b", "--batches", help="batch size", type=int, default=1024)
+    parser.add_argument("-b", "--batch_size", help="batch size", type=int, default=1024)
+    parser.add_argument("-l", "--batch_number", help="number of batches per epoch", type=int, default=None)
     parser.add_argument("-e", "--epochs", help="number of epochs", type=int, default=200)
     parser.add_argument("-r", "--rate", help="learning rate", type=float, default=1e-3)
     parser.add_argument("-v", "--verbose", help="verbose printing", action="store_true")
@@ -90,8 +104,8 @@ if __name__ == "__main__":
     wave_rest = torch.linspace(lmbda_min, lmbda_max, bins, dtype=torch.float32)
 
     # data loaders
-    trainloader = get_data_loader(args.dir, sdss.name, which="train", batch_size=args.batches, shuffle=True)
-    validloader = get_data_loader(args.dir, sdss.name, which="valid", batch_size=args.batches)
+    trainloader = get_data_loader(args.dir, sdss.name, which="train", batch_size=args.batch_size, shuffle=True)
+    validloader = get_data_loader(args.dir, sdss.name, which="valid", batch_size=args.batch_size)
 
     if args.verbose:
         print ("Observed frame:\t{:.0f} .. {:.0f} A ({} bins)".format(sdss.wave_obs.min(), sdss.wave_obs.max(), len(sdss.wave_obs)))
@@ -104,4 +118,4 @@ if __name__ == "__main__":
             normalize=True,
     )
     label = f'{args.outdir}/{args.label}.{args.latents}'
-    train(model, sdss, trainloader, validloader, n_epoch=args.epochs, label=label, lr=args.rate, verbose=args.verbose)
+    train(model, sdss, trainloader, validloader, n_epoch=args.epochs, n_batch=args.batch_number, label=label, lr=args.rate, verbose=args.verbose)
