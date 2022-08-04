@@ -169,7 +169,8 @@ def augment_spectra(batch, instrument, redshift=True, noise=True, mask=True):
         z_offset = z_lim*(torch.rand(batch_size, device=device)-0.5)
         # keep redshifts between 0 and 0.5
         z_new = z + z_offset
-        z_new = torch.minimum(torch.maximum(z_new, torch.zeros(batch_size)), 0.5 * torch.ones(batch_size))
+        z_new = torch.minimum(torch.maximum(z_new, torch.zeros(batch_size, device=device)),
+                              0.5 * torch.ones(batch_size, device=device))
         zfactor = ((1 + z_new)/(1 + z))
         wave_redshifted = (wave_obs.unsqueeze(1) * zfactor).T
 
@@ -182,7 +183,7 @@ def augment_spectra(batch, instrument, redshift=True, noise=True, mask=True):
     # add noise
     if noise:
         sigma = 0.2 * torch.max(spec, 1, keepdim=True)[0]
-        noise = sigma * torch.distributions.Normal(0, 1).sample(spec.shape)
+        noise = sigma * torch.distributions.Normal(0, 1).sample(spec.shape).to(device)
         spec_new += noise
         # add variance in quadrature, avoid division by 0
         w_new = 1/(1/(w_new + 1e-6) + (sigma**2))
