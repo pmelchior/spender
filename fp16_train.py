@@ -15,7 +15,7 @@ from model import SpectrumAutoencoder
 from util import load_model, permute_indices, mem_report, LogLinearDistribution, insert_jitters, jitter_redshift
 
 
-def prepare_train(seq,niter=10):
+def prepare_train(seq,niter=500):
     for d in seq:
         if not "iteration" in d:d["iteration"]=niter
         if not "encoder" in d:d.update({"encoder":d["data"]})
@@ -252,9 +252,9 @@ def train(models,
                 # stop after n_batch
                 if n_batch is not None and k == n_batch - 1:
                     break
+            detailed_loss[0][which][epoch] /= n_sample
 
         scheduler.step()
-        detailed_loss[0][which][epoch] /= n_sample
 
         with torch.no_grad():
             for which in range(n_encoder):
@@ -282,7 +282,7 @@ def train(models,
                     if n_batch is not None and k == n_batch - 1:
                         break
 
-            detailed_loss[1][which][epoch] /= n_sample
+                detailed_loss[1][which][epoch] /= n_sample
 
         if verbose:
             mem_report()
