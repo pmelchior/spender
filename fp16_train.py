@@ -97,7 +97,7 @@ def similarity_loss(instrument, model, spec, w, z, s, slope=0.5, individual=Fals
     if individual:
         return s_sim,spec_sim,sim_loss
 
-    # total loss: sum over N^2 terms, 
+    # total loss: sum over N^2 terms,
     # needs to have amplitude of N terms to compare to fidelity loss
     return sim_loss.sum() / batch_size
 
@@ -258,16 +258,16 @@ def train(models,
                 # stop after n_batch
                 if n_batch is not None and k == n_batch - 1:
                     break
+            detailed_loss[0][which][epoch] /= n_sample
 
         scheduler.step()
-        detailed_loss[0][which][epoch] /= n_sample
 
         with torch.no_grad():
             for which in range(n_encoder):
                 models[which].eval()
                 instruments[which].eval()
 
-                nsample = 0
+                n_sample = 0
                 for k, batch in enumerate(validloaders[which]):
                     batch_size = len(batch[0])
                     losses = get_losses(
@@ -282,19 +282,19 @@ def train(models,
                     )
                     # logging: validation
                     detailed_loss[1][which][epoch] += tuple( l.item() if hasattr(l, 'item') else 0 for l in losses )
-                    nsample += batch_size
+                    n_sample += batch_size
 
                     # stop after n_batch
                     if n_batch is not None and k == n_batch - 1:
                         break
 
-            detailed_loss[1][which][epoch] /= nsample
+                detailed_loss[1][which][epoch] /= n_sample
 
         if verbose:
             mem_report()
             losses = tuple(detailed_loss[0, :, epoch, :])
             vlosses = tuple(detailed_loss[1, :, epoch, :])
-            print('====> Epoch: %i')
+            print('====> Epoch: %i'%(epoch))
             print('TRAINING Losses:', losses)
             print('VALIDATION Losses:', vlosses)
 
