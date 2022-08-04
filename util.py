@@ -3,7 +3,6 @@ import torch
 import torch.nn.functional as F
 import humanize, psutil, GPUtil
 from torchinterp1d import Interp1d
-from torchinterp1d import Interp1d
 
 def get_norm(x):
     # simple median as robust mean across the spectrum
@@ -145,109 +144,63 @@ def mem_report():
     return
 
 
-class LogLinearDistribution():
-    def __init__(self, a, bound):
-        x0,xf = bound
-        self.bound = bound
-        self.a = a
-        self.norm = -a*np.log(10)/(10**(a*x0)-10**(a*xf))
+def resample_to_restframe(wave_obs,wave_rest,y,w,z):
+    wave_z = (wave_rest.unsqueeze(1)*(1 + z)).T
+    wave_obs = wave_obs.repeat(y.shape[0],1)
+    # resample observed spectra to restframe
+    yrest = Interp1d()(wave_obs, y, wave_z)
+    wrest =  Interp1d()(wave_obs, w, wave_z)
 
-    def pdf(self,x):
-        pdf = self.norm*10**(self.a*x)
-        pdf[(x<self.bound[0])|(x>self.bound[1])] = 0
-        return pdf
-
-    def cdf(self,x):
-        factor = self.norm/(-self.a*np.log(10))
-        cdf = -factor*(10**(self.a*x)-10**(self.a*self.bound[0]))
-        cdf[x<self.bound[0]] = 0
-        cdf[x>self.bound[1]] = 1
-        return cdf
-
-    def inv_cdf(self,cdf):
-        factor = self.norm/(-self.a*np.log(10))
-        return (1/self.a)*torch.log10(10**(self.a*self.bound[0])-cdf/factor)
+    # interpolation = extrapolation outside of observed region, need to mask
+    msk = (wave_z<=wave_obs.min())|(wave_z>=wave_obs.max())
+    # yrest[msk]=0 # not needed because all spectral elements are weighted
+    wrest[msk]=0
+    return yrest,wrest
 
 
-def insert_jitters(spec,number,slope=-1.32,bound=[0.0,2]):
+def augment_spectra(batch, instrument, redshift=True, noise=True, mask=True):
+    spec, w, z = batch
+    batch_size, spec_size = spec.shape
     device = spec.device
-    number = int(number)
-    location = torch.randint(len(spec), device=device, size=(1,number)).squeeze(0)
+    wave_obs = instrument.wave_obs
 
-    loglinear = LogLinearDistribution(slope,bound)
-    var = loglinear.inv_cdf(torch.rand(number,device=device))
-    amp = var**0.5
+    # batch_out  = {}
+    # data = []
+    # begin = 0
 
-    # half negative
-    half = torch.rand(number)>0.5
-    amp[half] = -amp[half]
-
-    # avoid inserting jitter to padded regions
-    mask = spec[location]>0
-    return location[mask],amp[mask]
-
-def jitter_redshift(batch, params, inst):
-    # original batch
-    spec, w, true_z = batch
-    device = spec.device
-    wave_obs = inst.wave_obs
-
-    wave_mat = wave_obs*torch.ones_like(spec)
-    ncopy = len(params)
-
-    batch_out  = {}
-
-    data = []
-
-    begin = 0
-    # number of copys
-    for copy,param in enumerate(params):
-        batch_size = len(true_z)
-
-        #z_offset,n_lim = param
-        z_lim, n_lim = param
-
-        # uniform distribution
-        z_offset = z_lim*(2*torch.rand(batch_size, device=device)-1)
-
-        n_jit = np.random.randint(n_lim[0],n_lim[1],
-                                  size=batch_size)
-
-        z_new = true_z+z_offset
-
-        z_new[z_new<0] = 0 # avoid negative redshift
-        z_new[z_new>0.5] = 0.5 # avoid very high redshift
-
-        zfactor = ((1+z_new)/(1+true_z)).unsqueeze(1)*torch.ones_like(spec)
+    if redshift:
+        # uniform distribution of redshift offsets
+        z_lim = 0.8 * torch.max(z)
+        z_offset = z_lim*(torch.rand(batch_size, device=device)-0.5)
+        # keep redshifts between 0 and 0.5
+        z_new = z + z_offset
+        z_new = torch.minimum(torch.maximum(z_new, torch.zeros(batch_size)), 0.5 * torch.ones(batch_size))
+        zfactor = ((1 + z_new)/(1 + z))
+        wave_redshifted = (wave_obs.unsqueeze(1) * zfactor).T
 
         # redshift linear interpolation
-        spec_new = Interp1d()(wave_mat*zfactor,spec,wave_mat)
-        w_new = Interp1d()(wave_mat*zfactor,w,wave_mat)
-        w_new[w_new<=1e-6] = 0
+        spec_new = Interp1d()(wave_redshifted, spec, wave_obs)
+        w_new = Interp1d()(wave_redshifted, w, wave_obs)
+    else:
+        spec_new, w_new, z_new = spec, w, z
 
-        record = []
-        for i in range(len(spec_new)):
-            loc,amp = insert_jitters(spec_new[i],n_jit[i])
-            spec_new[i][loc] += amp
-            w_new[i][loc] = 1/(amp**2+1/w_new[i][loc])
-            record.append([z_offset[i].item(),n_jit[i]])
+    # add noise
+    if noise:
+        sigma = 0.2 * torch.max(spec, 1, keepdim=True)[0]
+        noise = sigma * torch.distributions.Normal(0, 1).sample(spec.shape)
+        spec_new += noise
+        # add variance in quadrature, avoid division by 0
+        w_new = 1/(1/(w_new + 1e-6) + (sigma**2))
 
-        med = spec_new.median(1,False).values[:,None]
-        med[med<1e-1] = 1e-1
+    if mask:
+        length = spec_size // 10
+        start = torch.randint(0, spec_size-length, (1,)).item()
+        spec_new[:, start:start+length] = 0
+        w_new[:, start:start+length] = 0
 
-        spec_new /= med
-        #print("median:",spec_new.median(1,False).min())
+    # # TODO: could be trouble if no non-zero elements remain
+    # med = spec_new.median(1,False).values[:,None]
+    # med[med<1e-1] = 1e-1
+    # spec_new /= med
 
-        if torch.isnan(spec_new).any():
-            nan_ind = torch.isnan(spec_new)
-            print("spec nan! z:", true_z[nan_ind],
-                  "offset:",z_offset[nan_ind])
-
-        end = begin+batch_size
-        data.append([spec_new,w_new,z_new])
-        batch_out[copy]={"param":record,"range":[begin,end]}
-        begin=end
-
-    new_batch = [torch.cat([d[i] for d in data]) for i in range(3)]
-    batch_out['batch'] = new_batch
-    return batch_out
+    return spec_new, w_new, z_new

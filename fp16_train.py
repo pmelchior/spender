@@ -12,7 +12,7 @@ from torchinterp1d import Interp1d
 from batch_wrapper import get_data_loader, collect_batches, load_batch, save_batch
 from instrument import get_instrument
 from model import SpectrumAutoencoder
-from util import load_model, permute_indices, mem_report, LogLinearDistribution, insert_jitters, jitter_redshift
+from util import permute_indices, mem_report, augment_spectra, resample_to_restframe
 
 
 def prepare_train(seq,niter=500):
@@ -64,20 +64,13 @@ def consistency_loss(s, s_aug, individual=False):
         return x, sim_loss
     return sim_loss.sum()
 
-def resample_to_restframe(wave_obs,wave_rest,y,w,z):
-    wave_z = (wave_rest.unsqueeze(1)*(1 + z)).T
-    wave_obs = wave_obs.repeat(y.shape[0],1)
-    # resample restframe spectra on observed spectra
-    yrest = Interp1d()(wave_obs,y,wave_z)
-    wrest =  Interp1d()(wave_obs,w,wave_z)
-    msk = (wave_z<=wave_obs.min())|(wave_z>=wave_obs.max())
-    yrest[msk]=0
-    wrest[msk]=0
-    return yrest,wrest
+def similarity_loss(instrument, model, spec, w, z, s, slope=0.5, individual=False, wid=5):
+    spec,w = resample_to_restframe(instrument.wave_obs,
+                                   model.decoder.wave_rest,
+                                   spec,w,z)
 
-def _similarity_loss(spec,w,s,individual=False,rand=[],wid=5,slope=0.5):
     batch_size, s_size = s.shape
-    if rand==[]:rand = permute_indices(batch_size)
+    rand = permute_indices(batch_size)
     new_w = 1.0/(w**(-1)+w[rand]**(-1))
     D = (new_w > 0).sum(dim=1)
     D[D<1]=1 # avoids NAN in loss function
@@ -88,12 +81,6 @@ def _similarity_loss(spec,w,s,individual=False,rand=[],wid=5,slope=0.5):
     if individual:
         return s_sim,spec_sim,sim_loss
     return sim_loss.sum()
-
-def similarity_loss(instrument,model,spec,w,z,s,slope=0.5,individual=False):
-    spec,w = resample_to_restframe(instrument.wave_obs,
-                                   model.decoder.wave_rest,
-                                   spec,w,z)
-    return _similarity_loss(spec,w,s,slope=slope,individual=individual)
 
 def _losses(model,
             instrument,
@@ -130,8 +117,8 @@ def get_losses(model,
     loss, sim_loss, s = _losses(model, instrument, batch, similarity=similarity, slope=slope, mask_skyline=mask_skyline)
 
     if augmentation:
-        batch_copy = jitter_redshift(batch, mock_params, instrument)
-        loss_, sim_loss_, s_ = _losses(model, instrument, batch_copy["batch"], similarity=similarity, slope=slope, mask_skyline=mask_skyline)
+        batch_copy = augment_spectra(batch, instrument)
+        loss_, sim_loss_, s_ = _losses(model, instrument, batch_copy, similarity=similarity, slope=slope, mask_skyline=mask_skyline)
     else:
         loss_ = sim_loss_ = 0
 
