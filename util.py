@@ -169,16 +169,20 @@ def augment_spectra(batch, instrument, redshift=True, noise=True, mask=True):
         z_offset = z_lim*(torch.rand(batch_size, device=device)-0.5)
         # keep redshifts between 0 and 0.5
         z_new = z + z_offset
-        z_new = torch.minimum(torch.maximum(z_new, torch.zeros(batch_size, device=device)),
-                              0.5 * torch.ones(batch_size, device=device))
+        z_new = torch.minimum(torch.nn.functional.relu(z_new), 0.5 * torch.ones(batch_size, device=device))
         zfactor = ((1 + z_new)/(1 + z))
         wave_redshifted = (wave_obs.unsqueeze(1) * zfactor).T
 
         # redshift linear interpolation
         spec_new = Interp1d()(wave_redshifted, spec, wave_obs)
-        w_new = Interp1d()(wave_redshifted, w, wave_obs)
+        # ensure extrapolated values have zero weights
+        w_new = torch.clone(w)
+        w_new[:,0] = 0
+        w_new[:,-1] = 0
+        w_new = Interp1d()(wave_redshifted, w_new, wave_obs)
+        w_new = torch.nn.functional.relu(w_new)
     else:
-        spec_new, w_new, z_new = spec, w, z
+        spec_new, w_new, z_new = torch.clone(spec), torch.clone(w), z
 
     # add noise
     if noise:
@@ -193,7 +197,7 @@ def augment_spectra(batch, instrument, redshift=True, noise=True, mask=True):
         start = torch.randint(0, spec_size-length, (1,)).item()
         spec_new[:, start:start+length] = 0
         w_new[:, start:start+length] = 0
-
+    
     # # TODO: could be trouble if no non-zero elements remain
     # med = spec_new.median(1,False).values[:,None]
     # med[med<1e-1] = 1e-1

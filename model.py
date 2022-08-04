@@ -186,10 +186,13 @@ class BaseAutoencoder(nn.Module):
     def _forward(self, x, w=None, instrument=None, z=None, s=None):
         if s is None:
             s = self.encode(x, w=w, z=z)
+        
         spectrum_restframe = self.decode(s)
         spectrum_observed = self.decoder.transform(spectrum_restframe, instrument=instrument, z=z)
+
         if self.normalize:
             spectrum_observed = self._normalize(x, spectrum_observed, w=w)
+        
         return s, spectrum_restframe, spectrum_observed
 
     def forward(self, x, w=None, instrument=None, z=None, s=None):
@@ -201,13 +204,11 @@ class BaseAutoencoder(nn.Module):
         return self._loss(x, w, spectrum_observed, individual=individual)
 
     def _loss(self, x, w, spectrum_observed, individual=False):
-        # loss = average squared deviation in units of variance
-        # if the model is identical to observed spectrum (up to the noise)
-        # in every unmasked bin, then loss = 1 per object
-        D = (w > 0).sum(dim=1)
+        # loss = total squared deviation in units of variance
+        # if the model is identical to observed spectrum (up to the noise),
+        # then loss per object = D (number of non-zero bins)
         loss_ind = torch.sum(0.5 * w * (x - spectrum_observed).pow(2), dim=1)
-        loss_ind[D==0] = 0
-
+        
         if individual:
             return loss_ind
 
