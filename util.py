@@ -9,11 +9,6 @@ def get_norm(x):
     norm = np.median(x, axis=1)
     return norm
 
-def permute_indices(length,n_redundant=1):
-    wrap_indices = torch.arange(length).repeat(n_redundant)
-    rand_permut = wrap_indices[torch.randperm(length*n_redundant)]
-    return rand_permut
-
 # adapted from https://github.com/sigeisler/reliable_gnn_via_robust_aggregation/
 def _distance_matrix(x, eps_factor=1e2):
     """Naive dense distance matrix calculation.

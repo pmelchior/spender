@@ -12,7 +12,7 @@ from torchinterp1d import Interp1d
 from batch_wrapper import get_data_loader, collect_batches, load_batch, save_batch
 from instrument import get_instrument
 from model import SpectrumAutoencoder
-from util import permute_indices, mem_report, augment_spectra, resample_to_restframe
+from util import mem_report, augment_spectra, resample_to_restframe
 
 
 def prepare_train(seq,niter=500):
@@ -70,17 +70,36 @@ def similarity_loss(instrument, model, spec, w, z, s, slope=0.5, individual=Fals
                                    spec,w,z)
 
     batch_size, s_size = s.shape
-    rand = permute_indices(batch_size)
-    new_w = 1.0/(w**(-1)+w[rand]**(-1))
-    D = (new_w > 0).sum(dim=1)
-    D[D<1]=1 # avoids NAN in loss function
-    spec_sim = torch.sum(new_w*(spec[rand]-spec)**2,dim=1)/D
-    s_sim = torch.sum((s[rand]-s)**2,dim=1)/s_size
+
+    # pairwise dissimilarity of spectra
+    S = (spec[None,:,:] - spec[:,None,:])**2
+
+    # pairwise weights
+    non_zero = w > 0
+    W = (1 / w)[None,:,:] + (1 / w)[:,None,:]
+    W = (non_zero[None,:,:] * non_zero[:,None,:]) / W
+
+    # non-zero element count
+    D = (W > 0).sum(-1)
+    # avoids division by 0
+    D = torch.maximum(D, torch.ones(D.shape))
+
+    # dissimilarity of spectra
+    spec_sim = (W * S).sum(-1) / D
+
+    # dissimilarity of latents
+    s_sim = ((s[None,:,:] - s[:,None,:])**2).sum(-1) / s_size
+
+    # only give large loss of (dis)similarities are different (either way)
     x = s_sim-spec_sim
     sim_loss = torch.sigmoid(x)+torch.sigmoid(-slope*x-wid)
+
     if individual:
         return s_sim,spec_sim,sim_loss
-    return sim_loss.sum()
+
+    # total loss: sum over N^2 terms, 
+    # needs to have amplitude of N terms to compare to fidelity loss
+    return sim_loss.sum() / batch_size
 
 def _losses(model,
             instrument,
