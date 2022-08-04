@@ -207,7 +207,10 @@ class BaseAutoencoder(nn.Module):
         # loss = total squared deviation in units of variance
         # if the model is identical to observed spectrum (up to the noise),
         # then loss per object = D (number of non-zero bins)
-        loss_ind = torch.sum(0.5 * w * (x - spectrum_observed).pow(2), dim=1)
+        
+        # to make it to order unity for comparing losses, divide out L (number of bins)
+        # instead of D, so that spectra with more valid bins have larger impact
+        loss_ind = torch.sum(0.5 * w * (x - spectrum_observed).pow(2), dim=1) / x.shape[1]
         
         if individual:
             return loss_ind

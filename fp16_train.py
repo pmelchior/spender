@@ -69,7 +69,8 @@ def similarity_loss(instrument, model, spec, w, z, s, slope=0.5, individual=Fals
                                    model.decoder.wave_rest,
                                    spec,w,z)
 
-    batch_size, s_size = s.shape
+    batch_size, spec_size = spec.shape
+    _, s_size = s.shape
     device = s.device
 
     # pairwise dissimilarity of spectra
@@ -80,13 +81,9 @@ def similarity_loss(instrument, model, spec, w, z, s, slope=0.5, individual=Fals
     W = (1 / w)[None,:,:] + (1 / w)[:,None,:]
     W = (non_zero[None,:,:] * non_zero[:,None,:]) / W
 
-    # non-zero element count
-    D = (W > 0).sum(-1)
-    # avoids division by 0
-    D = torch.maximum(D, torch.ones(D.shape, device=device))
-
     # dissimilarity of spectra
-    spec_sim = (W * S).sum(-1) / D
+    # of order unity, larger for spectrum pairs with more comparable bins
+    spec_sim = (W * S).sum(-1) / spec_size
 
     # dissimilarity of latents
     s_sim = ((s[None,:,:] - s[:,None,:])**2).sum(-1) / s_size
