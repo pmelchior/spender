@@ -124,7 +124,7 @@ def _losses(model,
 def get_losses(model,
                instrument,
                batch,
-               augmentation=True,
+               aug_fct=None,
                similarity=True,
                consistency=True,
                slope=0,
@@ -133,13 +133,13 @@ def get_losses(model,
 
     loss, sim_loss, s = _losses(model, instrument, batch, similarity=similarity, slope=slope, mask_skyline=mask_skyline)
 
-    if augmentation:
-        batch_copy = augment_spectra(batch, instrument)
+    if aug_fct is not None:
+        batch_copy = aug_fct(batch, instrument)
         loss_, sim_loss_, s_ = _losses(model, instrument, batch_copy, similarity=similarity, slope=slope, mask_skyline=mask_skyline)
     else:
         loss_ = sim_loss_ = 0
 
-    if augmentation and consistency:
+    if consistency and aug_fct is not None:
         cons_loss = consistency_loss(s, s_)
     else:
         cons_loss = 0
@@ -174,8 +174,8 @@ def train(models,
           lr=1e-4,
           n_batch=50,
           mask_skyline=True,
+          aug_fct=None,
           similarity=True,
-          augmentation=True,
           consistency=True,
           ):
 
@@ -234,7 +234,7 @@ def train(models,
                     models[which],
                     instruments[which],
                     batch,
-                    augmentation=augmentation,
+                    aug_fct=aug_fct,
                     similarity=similarity,
                     consistency=consistency,
                     slope=slope,
@@ -272,7 +272,7 @@ def train(models,
                         models[which],
                         instruments[which],
                         batch,
-                        augmentation=augmentation,
+                        aug_fct=aug_fct,
                         similarity=similarity,
                         consistency=consistency,
                         slope=slope,
@@ -335,6 +335,12 @@ if __name__ == "__main__":
     trainloaders = [ get_data_loader(args.dir, name, which="train",  batch_size=args.batch_size, shuffle=True) for name in instrument_names ]
     validloaders = [ get_data_loader(args.dir, name, which="valid", batch_size=args.batch_size) for name in instrument_names ]
 
+    # get augmentation function
+    if args.augmentation:
+        aug_fct = augment_spectra
+    else:
+        aug_fct = None
+
     # define training sequence
     SED = {"data":[True,False], "decoder":True}
     BED = {"data":[False,True], "decoder":True}
@@ -373,7 +379,7 @@ if __name__ == "__main__":
         print ("--- Model %s ---" % label)
 
     train(models, instruments, trainloaders, validloaders, n_epoch=n_epoch,
-          n_batch=args.batch_number, lr=args.rate, augmentation=args.augmentation, similarity=args.similarity, consistency=args.consistency, label=label, verbose=args.verbose)
+          n_batch=args.batch_number, lr=args.rate, aug_fct=aug_fct, similarity=args.similarity, consistency=args.consistency, label=label, verbose=args.verbose)
 
     if args.verbose:
         print("--- %s seconds ---" % (time.time()-init_t))
