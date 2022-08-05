@@ -9,47 +9,6 @@ def get_norm(x):
     norm = np.median(x, axis=1)
     return norm
 
-# adapted from https://github.com/sigeisler/reliable_gnn_via_robust_aggregation/
-def _distance_matrix(x, eps_factor=1e2):
-    """Naive dense distance matrix calculation.
-
-    Parameters
-    ----------
-    x : torch.Tensor
-        Dense [n, d] or [n, k, d] tensor containing the node attributes/embeddings.
-    eps_factor : [type], optional
-        Factor to be multiplied by `torch.finfo(x.dtype).eps` for "safe" sqrt, by default 1e2.
-    Returns
-    -------
-    torch.Tensor
-        [n, n] or [n, k, k] distance matrix.
-    """
-    x_norm = (x ** 2).sum(-1).unsqueeze(-1)
-    x_norm_t = x_norm.transpose(-2,-1)
-    squared = x_norm + x_norm_t - (2 * (x @ x.transpose(-2, -1)))
-    # For "save" sqrt
-    eps = eps_factor * torch.finfo(x.dtype).eps
-    return torch.sqrt(torch.abs(squared) + eps)
-
-def soft_weighted_medoid(x, temperature=1.0):
-    """A weighted Medoid aggregation.
-
-    Parameters
-    ----------
-    x : torch.Tensor
-        Dense [n, d] tensor containing the node attributes/embeddings.
-    temperature : float, optional
-        Temperature for the argmin approximation by softmax, by default 1.0
-    Returns
-    -------
-    torch.Tensor
-        The new embeddings [n, d].
-    """
-    # Geisler 2020, eqs 2-3
-    distances = _distance_matrix(x)
-    s = F.softmax(-distances.sum(dim=-1) / temperature, dim=-1)
-    return (s.unsqueeze(-1) * x).sum(dim=-2)
-
 
 def load_model(fileroot, n_latent=10):
     if not torch.cuda.is_available():
@@ -159,10 +118,6 @@ def augment_spectra(batch, instrument, redshift=True, noise=True, mask=True):
     device = spec.device
     wave_obs = instrument.wave_obs
 
-    # batch_out  = {}
-    # data = []
-    # begin = 0
-
     if redshift:
         # uniform distribution of redshift offsets
         z_lim = 0.8 * torch.max(z)
@@ -197,10 +152,5 @@ def augment_spectra(batch, instrument, redshift=True, noise=True, mask=True):
         start = torch.randint(0, spec_size-length, (1,)).item()
         spec_new[:, start:start+length] = 0
         w_new[:, start:start+length] = 0
-    
-    # # TODO: could be trouble if no non-zero elements remain
-    # med = spec_new.median(1,False).values[:,None]
-    # med[med<1e-1] = 1e-1
-    # spec_new /= med
 
     return spec_new, w_new, z_new
