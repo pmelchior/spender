@@ -1,124 +1,121 @@
 #!/usr/bin/env python
-# coding: utf-8
 
-#!pip install git+https://github.com/aliutkus/torchinterp1d.git
-#!pip install accelerate
-
-import sys
-assert len(sys.argv) == 2, "usage: train_sdss <path_to_spectra.npz>"
-filename = sys.argv[1]
-
+import argparse
 import numpy as np
 import torch
 from torch import nn
 from torch import optim
 from accelerate import Accelerator
 
-from model import SpectrumAutoencoder, Instrument
-from util import load_data, augment_batch
-
-# load data, specify device to prevent copying later
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-data = load_data(filename, which="train", device=device)
-valid_data = load_data(filename, which="valid", device=device)
+from batch_wrapper import get_data_loader
+from instrument import get_instrument
+from model import SpectrumAutoencoder
 
 
-batch_size=2048
-trainloader = torch.utils.data.DataLoader(
-    torch.utils.data.TensorDataset(data['y'], data['w'], data['z']),
-    batch_size=batch_size,
-    shuffle=False)
-
-validloader = torch.utils.data.DataLoader(
-    torch.utils.data.TensorDataset(valid_data['y'], valid_data['w'], valid_data['z']),
-    batch_size=batch_size)
-
-# define SDSS instrument
-wave_obs = torch.tensor(data['wave'], dtype=torch.float32)
-sdss = Instrument(wave_obs)
-
-# restframe wavelength for reconstructed spectra
-lmbda_min = data['wave'].min()/(1+data['z'].max())
-lmbda_max = data['wave'].max()
-bins = int(data['wave'].shape[0] * (1 + data['z'].max()))
-wave_rest = torch.linspace(lmbda_min, lmbda_max, bins, dtype=torch.float32)
-
-print ("Observed frame:\t{:.0f} .. {:.0f} A ({} bins)".format(wave_obs.min(), wave_obs.max(), len(wave_obs)))
-print ("Restframe:\t{:.0f} .. {:.0f} A ({} bins)".format(lmbda_min, lmbda_max, bins))
-
-def train(model, accelerator, instrument, trainloader, validloader, n_epoch=200, label="", silent=False, lr=3e-4, augmented=False):
-
-    assert augmented in [True, False, "redshift", "mask"]
+def train(model, instrument, trainloader, validloader, n_epoch=200, n_batch=None, mask_skyline=True, label="", verbose=False, lr=3e-4):
 
     optimizer = optim.Adam(model.parameters(), lr=lr)
     scheduler = optim.lr_scheduler.OneCycleLR(optimizer, lr, total_steps=n_epoch)
-    model, optimizer = accelerator.prepare(model, optimizer)
+
+    accelerator = Accelerator(mixed_precision='fp16')
+    model, instrument, trainloader, validloader, optimizer = accelerator.prepare(model, instrument, trainloader, validloader, optimizer)
 
     losses = []
+    n_sample = 0
     for epoch in range(n_epoch):
         model.train()
         train_loss = 0.
-        for batch in trainloader:
+        for k, batch in enumerate(trainloader):
+            batch_size = len(batch[0])
             spec, w, z = batch
+
+            if mask_skyline:
+                w[:, instrument.skyline_mask] = 0
+
             loss = model.loss(spec, w, instrument=instrument, z=z)
             accelerator.backward(loss)
             train_loss += loss.item()
-
-            if augmented:
-                options = ["redshift", "mask"]
-                if augmented in options:
-                    how = augmented
-                else:
-                    how = options[np.random.randint(2)] # select augmentation type at random
-                spec_, w_, z_ = augment_batch(batch, how=how, wave_obs=instrument.wave_obs)
-
-                # encode augmented data
-                s_ = model.encode(spec_, w=w_, z=z_)
-                # but compute loss of decoded result against original (including redshift)
-                _, _, spectrum_observed = model._forward(None, s=s_, instrument=instrument, z=z)
-                loss =  model._loss(spec, w, spectrum_observed)
-                accelerator.backward(loss)
-
+            n_sample += batch_size
             optimizer.step()
             optimizer.zero_grad()
-        train_loss /= len(trainloader.dataset)
+
+            # stop after n_batch
+            if n_batch is not None and k == n_batch - 1:
+                break
+        train_loss /= n_sample
 
         with torch.no_grad():
             model.eval()
             valid_loss = 0.
-            for batch in validloader:
+            for k, batch in enumerate(validloader):
+                batch_size = len(batch[0])
                 spec, w, z = batch
+                if mask_skyline:
+                    w[:, instrument.skyline_mask] = 0
                 loss = model.loss(spec, w, instrument=instrument, z=z)
                 valid_loss += loss.item()
-            valid_loss /= len(validloader.dataset)
+                n_sample += batch_size
+                # stop after n_batch
+                if n_batch is not None and k == n_batch - 1:
+                    break
+            valid_loss /= n_sample
 
         scheduler.step()
         losses.append((train_loss, valid_loss))
 
-        if epoch % 20 == 0 or epoch == n_epoch - 1:
-            if not silent:
-                print('====> Epoch: %i TRAINING Loss: %.2e VALIDATION Loss: %.2e' % (epoch, train_loss, valid_loss))
+        if verbose:
+            print('====> Epoch: %i TRAINING Loss: %.2e VALIDATION Loss: %.2e' % (epoch, train_loss, valid_loss))
 
-            # checkpoints
-            torch.save(model, f'{label}.pt')
-            np.save(f'{label}.losses.npy', np.array(losses))
+        # checkpoints
+        if epoch % 5 == 0 or epoch == n_epoch - 1:
+            unwrapped_model = accelerator.unwrap_model(model)
+            unwrapped_instrument = accelerator.unwrap_model(instrument)
+            accelerator.save({
+                "model": unwrapped_model.state_dict(),
+                "instrument": unwrapped_instrument.state_dict(),
+                "optimizer": optimizer.optimizer.state_dict(),
+                "scheduler": scheduler.state_dict(),
+                "losses": losses,
+            }, f'{label}.pt')
 
 
-n_latent = 10
-n_model = 5
-label = "model.series.test"
-n_epoch = 400
+if __name__ == "__main__":
 
+    parser = argparse.ArgumentParser()
+    parser.add_argument("dir", help="data file directory")
+    parser.add_argument("label", help="output file label")
+    parser.add_argument("-o", "--outdir", help="output file directory", default=".")
+    parser.add_argument("-n", "--latents", help="latent dimensionality", type=int, default=2)
+    parser.add_argument("-b", "--batch_size", help="batch size", type=int, default=1024)
+    parser.add_argument("-l", "--batch_number", help="number of batches per epoch", type=int, default=None)
+    parser.add_argument("-e", "--epochs", help="number of epochs", type=int, default=200)
+    parser.add_argument("-r", "--rate", help="learning rate", type=float, default=1e-3)
+    parser.add_argument("-v", "--verbose", help="verbose printing", action="store_true")
+    args = parser.parse_args()
 
-accelerator = Accelerator(mixed_precision='fp16')
-trainloader, validloader, sdss = accelerator.prepare(trainloader, validloader, sdss)
+    # define SDSS instrument
+    sdss = get_instrument("SDSS")
 
-for i in range(n_model):
+    # restframe wavelength for reconstructed spectra
+    z_max = 0.2
+    lmbda_min = sdss.wave_obs.min()/(1+z_max)
+    lmbda_max = sdss.wave_obs.max()
+    bins = int(sdss.wave_obs.shape[0] * (1 + z_max))
+    wave_rest = torch.linspace(lmbda_min, lmbda_max, bins, dtype=torch.float32)
+
+    # data loaders
+    trainloader = get_data_loader(args.dir, sdss.name, which="train", batch_size=args.batch_size, shuffle=True)
+    validloader = get_data_loader(args.dir, sdss.name, which="valid", batch_size=args.batch_size)
+
+    if args.verbose:
+        print ("Observed frame:\t{:.0f} .. {:.0f} A ({} bins)".format(sdss.wave_obs.min(), sdss.wave_obs.max(), len(sdss.wave_obs)))
+        print ("Restframe:\t{:.0f} .. {:.0f} A ({} bins)".format(lmbda_min, lmbda_max, bins))
+
+    # define and train the model
     model = SpectrumAutoencoder(
             wave_rest,
-            n_latent=n_latent,
+            n_latent=args.latents,
             normalize=True,
     )
-    print (f"--- Model {i}/{n_model}")
-
-    train(model, accelerator, sdss, trainloader, validloader, n_epoch=n_epoch, label=label+f".{i}", lr=1e-3, augmented=True)
+    label = f'{args.outdir}/{args.label}.{args.latents}'
+    train(model, sdss, trainloader, validloader, n_epoch=args.epochs, n_batch=args.batch_number, label=label, lr=args.rate, verbose=args.verbose)
