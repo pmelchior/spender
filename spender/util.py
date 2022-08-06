@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -65,8 +66,9 @@ def load_models(label, n_config, n_latent=10):
 
 
 def skylines_mask(waves, intensity_limit=2, radii=5, debug=True):
-
-    f=open("sky-lines.txt","r")
+    this_dir, this_filename = os.path.split(__file__)
+    filename = os.path.join(this_dir, "data", "sky-lines.txt")
+    f=open(filename,"r")
     content = f.readlines()
     f.close()
 

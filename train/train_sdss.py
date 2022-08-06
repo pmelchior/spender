@@ -6,11 +6,7 @@ import torch
 from torch import nn
 from torch import optim
 from accelerate import Accelerator
-
-from batch_wrapper import get_data_loader
-from instrument import get_instrument
-from model import SpectrumAutoencoder
-
+from spender import SpectrumAutoencoder, get_instrument, get_data_loader
 
 def train(model, instrument, trainloader, validloader, n_epoch=200, n_batch=None, mask_skyline=True, label="", verbose=False, lr=3e-4):
 

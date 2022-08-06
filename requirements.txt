@@ -1,4 +1,0 @@
-torch
-accelerate
-git+https://github.com/aliutkus/torchinterp1d.git
-
