@@ -21,10 +21,10 @@ def train(model, instrument, trainloader, validloader, n_epoch=200, n_batch=None
     model, instrument, trainloader, validloader, optimizer = accelerator.prepare(model, instrument, trainloader, validloader, optimizer)
 
     losses = []
-    n_sample = 0
     for epoch in range(n_epoch):
         model.train()
         train_loss = 0.
+        n_sample = 0
         for k, batch in enumerate(trainloader):
             batch_size = len(batch[0])
             spec, w, z = batch
@@ -47,6 +47,7 @@ def train(model, instrument, trainloader, validloader, n_epoch=200, n_batch=None
         with torch.no_grad():
             model.eval()
             valid_loss = 0.
+            n_sample = 0
             for k, batch in enumerate(validloader):
                 batch_size = len(batch[0])
                 spec, w, z = batch
