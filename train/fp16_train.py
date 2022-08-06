@@ -9,10 +9,8 @@ from torch import optim
 from accelerate import Accelerator
 from torchinterp1d import Interp1d
 
-from batch_wrapper import get_data_loader, collect_batches, load_batch, save_batch
-from instrument import get_instrument
-from model import SpectrumAutoencoder
-from util import mem_report, augment_spectra, resample_to_restframe
+from spender import SpectrumAutoencoder, get_instrument, get_data_loader
+from spender.util import mem_report, augment_spectra, resample_to_restframe
 
 
 def prepare_train(seq,niter=500):

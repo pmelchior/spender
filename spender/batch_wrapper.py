@@ -9,7 +9,7 @@ import torch
 from torch.utils.data import IterableDataset, DataLoader
 from itertools import chain
 
-from util import get_norm, mem_report
+from .util import get_norm, mem_report
 
 
 ############ Functions for creating batched files ###############

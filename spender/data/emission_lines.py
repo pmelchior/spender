@@ -1,9 +1,3 @@
-#!/usr/bin/env python
-# coding: utf-8
-import os,sys
-import matplotlib
-from PIL import Image
-
 emissionlines = {
 1033.82: "O VI",
 1215.24: "Lyα",
@@ -57,4 +51,3 @@ absorptionlines = {
 
 skylines = [5578.5, 5894.6, 6301.7, 7246.0]
 lines = {**emissionlines, **absorptionlines}
-

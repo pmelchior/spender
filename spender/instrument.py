@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 
-from util import skylines_mask
+from .util import skylines_mask
 
 class Instrument(nn.Module):
     def __init__(self,
