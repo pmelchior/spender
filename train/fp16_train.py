@@ -148,13 +148,8 @@ def get_losses(model,
 def checkpoint(accelerator, args, optimizer, scheduler, n_encoder, label, losses):
     unwrapped = [accelerator.unwrap_model(args_i).state_dict() for args_i in args]
 
-    model_unwrapped = unwrapped[:n_encoder]
-    instruments_unwrapped = unwrapped[n_encoder:2*n_encoder]
-
-    # checkpoints
     accelerator.save({
-        "model": model_unwrapped,
-        "instrument": instruments_unwrapped,
+        "model": unwrapped,
         "optimizer": optimizer.optimizer.state_dict(), # optimizer is an AcceleratedOptimizer object
         "scheduler": scheduler.state_dict(),
         "losses": losses,
@@ -297,6 +292,7 @@ def train(models,
         if epoch % 5 == 0 or epoch == n_epoch - 1:
             args = models + instruments
             checkpoint(accelerator, args, optimizer, scheduler, n_encoder, label, detailed_loss)
+            break
 
 
 if __name__ == "__main__":
@@ -362,11 +358,12 @@ if __name__ == "__main__":
 
     # define and train the model
     n_hidden = (64, 256, 1024)
-    models = [ SpectrumAutoencoder(wave_rest,
-                                    n_latent=args.latents,
-                                    n_hidden=n_hidden,
-                                    normalize=True),
-              ] * 2
+    models = [ SpectrumAutoencoder(instrument,
+                                   wave_rest,
+                                   n_latent=args.latents,
+                                   n_hidden=n_hidden,
+                                   normalize=True)
+              for instrument in instruments ]
     # use same decoder
     models[1].decoder = models[0].decoder
 

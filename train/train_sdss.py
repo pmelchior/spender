@@ -69,7 +69,6 @@ def train(model, instrument, trainloader, validloader, n_epoch=200, n_batch=None
             unwrapped_instrument = accelerator.unwrap_model(instrument)
             accelerator.save({
                 "model": unwrapped_model.state_dict(),
-                "instrument": unwrapped_instrument.state_dict(),
                 "optimizer": optimizer.optimizer.state_dict(),
                 "scheduler": scheduler.state_dict(),
                 "losses": losses,
@@ -110,6 +109,7 @@ if __name__ == "__main__":
 
     # define and train the model
     model = SpectrumAutoencoder(
+            sdss,
             wave_rest,
             n_latent=args.latents,
             normalize=True,
