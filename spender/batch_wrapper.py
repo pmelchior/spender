@@ -20,34 +20,32 @@ class CPU_Unpickler(pickle.Unpickler):
             return lambda b: torch.load(io.BytesIO(b), map_location='cpu')
         else: return super().find_class(module, name)
 
-def load_batch(batch_name):
+def load_batch(batch_name, subset=None):
     with open(batch_name, 'rb') as f:
         if torch.cuda.is_available():
-            batch_copy = pickle.load(f)
+            batch = pickle.load(f)
         else:
-            batch_copy = CPU_Unpickler(f).load()
+            batch = CPU_Unpickler(f).load()
 
-    if type(batch_copy)==list:
-        spec,w,z = batch_copy[:3]
-        w[w<=1e-6] = 0
-        return spec,w,z
-    else:
-        return batch_copy
+    if subset is not None:
+        return batch[subset]
+    return batch
 
 
 # based on https://medium.com/speechmatics/how-to-build-a-streaming-dataloader-with-pytorch-a66dd891d9dd
 class BatchedFilesDataset(IterableDataset):
 
-    def __init__(self, file_list, shuffle=False):
+    def __init__(self, file_list, shuffle=False, subset=None):
         assert len(file_list), "File list cannot be empty"
         self.file_list = file_list
         self.shuffle = shuffle
+        self.subset = subset
 
     def process_data(self, idx):
         if self.shuffle:
             idx = random.randint(0, len(self.file_list) -1)
         batch_name = self.file_list[idx]
-        data = load_batch(batch_name)
+        data = load_batch(batch_name, subset=self.subset)
         for x in zip(*data):
             yield x
 
@@ -61,7 +59,6 @@ class BatchedFilesDataset(IterableDataset):
         return len(self.file_list)
 
 def collect_batches(dir, name, tag="chunk1024", which=None):
-
     assert name in ["SDSS", "BOSS"]
     filename = f"{name}{tag}_*.pkl"
     batch_files = glob.glob(dir + "/" + filename)
@@ -75,12 +72,15 @@ def collect_batches(dir, name, tag="chunk1024", which=None):
     if which == "test": return test_batches
     elif which == "valid": return valid_batches
     elif which == "train": return train_batches
-    else: return all_batches
+    else: return batches
 
 def get_data_loader(dir, name, tag="chunk1024", which=None, batch_size=1024, shuffle=False):
     files = collect_batches(dir, name, tag=tag, which=which)
-    # load data on demand, random order
-    data = BatchedFilesDataset(files, shuffle=shuffle)
+    if which in ["train", "valid"]:
+        subset = slice(0,3)
+    else:
+        subset = None
+    data = BatchedFilesDataset(files, shuffle=shuffle, subset=subset)
     return DataLoader(data, batch_size=batch_size)
 
 
@@ -164,13 +164,13 @@ def prepare_batch(input_list):
             print("All zero weight, continue...",plate, mjd, fiberid)
             continue
 
-        w[w<1e-6] = 1e-6
+        w[w<1e-6] = 0
         specs[i,iw:endpoint] = x[1][:endpoint-iw]/norm
         weights[i,iw:endpoint] = w[0][:endpoint-iw]
         zreds[i] = Z
         zerrs[i] = Z_ERR
         norms[i] = norm
-        specid.append("%d-%d-%d"%(plate,mjd,fiberid))
+        specid.append((plate,mjd,fiberid))
 
         i += 1
 
@@ -193,11 +193,12 @@ def prepare_batch(input_list):
     print("len(specs):",len(specs),#"specid:",specid,
           "rand_int",rand_int.max())
 
-    specid = np.array(specid)
+    specid = np.array(specid, dtype=int)
     batch_copy = [torch.tensor(specs[rand_int],device=device),
                   torch.tensor(weights[rand_int],device=device),
                   torch.tensor(zreds[rand_int],device=device),
-                  specid[rand_int],norms[rand_int],
+                  torch.tensor(specid[rand_int],device=device),
+                  torch.tensor(norms[rand_int],device=device),
                   torch.tensor(zerrs[rand_int],device=device)]
 
     batch_name = "%s%s_%d.pkl"%("",code,wh_start)
