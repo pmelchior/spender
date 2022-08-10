@@ -51,14 +51,41 @@ class SDSS(Instrument):
         dirname = os.path.join(dir, f"{classname}-spectra")
         flocal = os.path.join(dirname, filename)
         if not os.path.isfile(flocal):
+            os.makedirs(dirname, exist_ok=True)
             url = "%s/%s/%s" % (cls._base_url, str(plate).zfill(4), filename)
             print(f"downloading {url}")
-            os.makedirs(dirname, exist_ok=True)
             urllib.request.urlretrieve(url, flocal)
 
         if return_file:
             return flocal
         return cls.prepare_spectrum(flocal)
+
+    @classmethod
+    def get_image(cls, dir, plate, mjd, fiberid, return_file=False):
+        filename = "im-%s-%i-%s.jpeg" % (str(plate).zfill(4), mjd, str(fiberid).zfill(4))
+        dirname = os.path.join(dir, "sdss-images")
+        flocal = os.path.join(dirname, filename)
+        if not os.path.isfile(flocal):
+            os.makedirs(dirname, exist_ok=True)
+            # get RA/DEC from spectrum file
+            specname = cls.get_spectrum(dir, plate, mjd, fiberid, return_file=True)
+            hdulist = fits.open(specname)
+            specinfo = hdulist[2].data[0]
+            ra, dec = specinfo['PLUG_RA'], specinfo['PLUG_DEC']
+            # query skyserver cutout service
+            print(f"downloading image at {ra}/{dec}")
+            image_url = "https://skyserver.sdss.org/dr16/SkyServerWS/ImgCutout/getjpeg"
+            scale, size, opt = 0.2, 256, "S" # "S" = outline of fiber
+            params = {"ra":ra, "dec":dec, "scale": scale,
+                      "height": size, "width": size, "opt": opt}
+            url = image_url + "?" + "&".join('='.join((key,str(val))) for (key,val) in params.items())
+            urllib.request.urlretrieve(url, flocal)
+
+        if return_file:
+            return flocal
+
+        from IPython import display
+        return display.Image(flocal)
 
     @classmethod
     def prepare_spectrum(cls, filename):
