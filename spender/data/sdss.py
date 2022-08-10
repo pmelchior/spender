@@ -5,9 +5,10 @@ from torch.utils.data import DataLoader
 from torchinterp1d import Interp1d
 import astropy.io.fits as fits
 import astropy.table as aTable
+from functools import partial
 
 from ..instrument import Instrument
-from ..util import BatchedFilesDataset
+from ..util import BatchedFilesDataset, load_batch
 
 class SDSS(Instrument):
     _wave_obs = 10**torch.arange(3.578, 3.97, 0.0001)
@@ -23,7 +24,8 @@ class SDSS(Instrument):
             subset = slice(0,3)
         else:
             subset = None
-        data = BatchedFilesDataset(files, shuffle=shuffle, subset=subset)
+        load_fct = partial(load_batch, subset=subset)
+        data = BatchedFilesDataset(files, load_fct, shuffle=shuffle)
         return DataLoader(data, batch_size=batch_size)
 
     @classmethod
