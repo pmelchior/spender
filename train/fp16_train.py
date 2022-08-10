@@ -110,7 +110,7 @@ def _losses(model,
         w[:, instrument.skyline_mask] = 0
 
     # need the latents later on if similarity=True
-    s = model.encode(spec, w=w, z=z)
+    s = model.encode(spec, w=w, aux=z.unsqueeze(1))
     loss = model.loss(spec, w, instrument, z=z, s=s)
 
     if similarity:
