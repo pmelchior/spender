@@ -6,7 +6,8 @@ import torch
 from torch import nn
 from torch import optim
 from accelerate import Accelerator
-from spender import SpectrumAutoencoder, get_instrument, get_data_loader
+from spender import SpectrumAutoencoder
+from spender.data.sdss import SDSS
 
 def train(model, instrument, trainloader, validloader, n_epoch=200, n_batch=None, mask_skyline=True, label="", verbose=False, lr=3e-4):
 
@@ -90,29 +91,29 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # define SDSS instrument
-    sdss = get_instrument("SDSS")
+    instrument = SDSS()
 
     # restframe wavelength for reconstructed spectra
     z_max = 0.2
-    lmbda_min = sdss.wave_obs.min()/(1+z_max)
-    lmbda_max = sdss.wave_obs.max()
-    bins = int(sdss.wave_obs.shape[0] * (1 + z_max))
+    lmbda_min = instrument.wave_obs.min()/(1+z_max)
+    lmbda_max = instrument.wave_obs.max()
+    bins = int(instrument.wave_obs.shape[0] * (1 + z_max))
     wave_rest = torch.linspace(lmbda_min, lmbda_max, bins, dtype=torch.float32)
 
     # data loaders
-    trainloader = get_data_loader(args.dir, sdss.name, which="train", batch_size=args.batch_size, shuffle=True)
-    validloader = get_data_loader(args.dir, sdss.name, which="valid", batch_size=args.batch_size)
+    trainloader = SDSS.get_data_loader(args.dir, which="train", batch_size=args.batch_size, shuffle=True)
+    validloader = SDSS.get_data_loader(args.dir, which="valid", batch_size=args.batch_size)
 
     if args.verbose:
-        print ("Observed frame:\t{:.0f} .. {:.0f} A ({} bins)".format(sdss.wave_obs.min(), sdss.wave_obs.max(), len(sdss.wave_obs)))
+        print ("Observed frame:\t{:.0f} .. {:.0f} A ({} bins)".format(instrument.wave_obs.min(), instrument.wave_obs.max(), len(instrument.wave_obs)))
         print ("Restframe:\t{:.0f} .. {:.0f} A ({} bins)".format(lmbda_min, lmbda_max, bins))
 
     # define and train the model
     model = SpectrumAutoencoder(
-            sdss,
+            instrument,
             wave_rest,
             n_latent=args.latents,
             normalize=True,
     )
     label = f'{args.outdir}/{args.label}.{args.latents}'
-    train(model, sdss, trainloader, validloader, n_epoch=args.epochs, n_batch=args.batch_number, label=label, lr=args.rate, verbose=args.verbose)
+    train(model, instrument, trainloader, validloader, n_epoch=args.epochs, n_batch=args.batch_number, label=label, lr=args.rate, verbose=args.verbose)

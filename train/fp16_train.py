@@ -7,10 +7,10 @@ import torch
 from torch import nn
 from torch import optim
 from accelerate import Accelerator
-from torchinterp1d import Interp1d
 
-from spender import SpectrumAutoencoder, get_instrument, get_data_loader
-from spender.util import mem_report, augment_spectra, resample_to_restframe
+from spender import SpectrumAutoencoder
+from spender.data.sdss import SDSS, BOSS
+from spender.util import mem_report, resample_to_restframe
 
 
 def prepare_train(seq,niter=500):
@@ -132,7 +132,7 @@ def get_losses(model,
     loss, sim_loss, s = _losses(model, instrument, batch, similarity=similarity, slope=slope, mask_skyline=mask_skyline)
 
     if aug_fct is not None:
-        batch_copy = aug_fct(batch, instrument)
+        batch_copy = aug_fct(batch)
         loss_, sim_loss_, s_ = _losses(model, instrument, batch_copy, similarity=similarity, slope=slope, mask_skyline=mask_skyline)
     else:
         loss_ = sim_loss_ = 0
@@ -167,7 +167,7 @@ def train(models,
           lr=1e-4,
           n_batch=50,
           mask_skyline=True,
-          aug_fct=None,
+          aug_fcts=None,
           similarity=True,
           consistency=True,
           ):
@@ -227,7 +227,7 @@ def train(models,
                     models[which],
                     instruments[which],
                     batch,
-                    aug_fct=aug_fct,
+                    aug_fct=aug_fcts[which],
                     similarity=similarity,
                     consistency=consistency,
                     slope=slope,
@@ -265,7 +265,7 @@ def train(models,
                         models[which],
                         instruments[which],
                         batch,
-                        aug_fct=aug_fct,
+                        aug_fct=aug_fcts[which],
                         similarity=similarity,
                         consistency=consistency,
                         slope=slope,
@@ -292,7 +292,6 @@ def train(models,
         if epoch % 5 == 0 or epoch == n_epoch - 1:
             args = models + instruments
             checkpoint(accelerator, args, optimizer, scheduler, n_encoder, label, detailed_loss)
-            break
 
 
 if __name__ == "__main__":
@@ -312,9 +311,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # define instruments
-    instrument_names = ["SDSS", "BOSS"]
-    instruments = [ get_instrument(name) for name in instrument_names ]
-    n_encoder = len(instrument_names)
+    instruments = [ SDSS(), BOSS() ]
+    n_encoder = len(instruments)
 
     # restframe wavelength for reconstructed spectra
     # Note: represents joint dataset wavelength range
@@ -326,14 +324,14 @@ if __name__ == "__main__":
         print ("Restframe:\t{:.0f} .. {:.0f} A ({} bins)".format(lmbda_min, lmbda_max, bins))
 
     # data loaders
-    trainloaders = [ get_data_loader(args.dir, name, which="train",  batch_size=args.batch_size, shuffle=True) for name in instrument_names ]
-    validloaders = [ get_data_loader(args.dir, name, which="valid", batch_size=args.batch_size) for name in instrument_names ]
+    trainloaders = [ inst.get_data_loader(args.dir, which="train",  batch_size=args.batch_size, shuffle=True) for inst in instruments ]
+    validloaders = [ inst.get_data_loader(args.dir, which="valid", batch_size=args.batch_size) for inst in instruments ]
 
     # get augmentation function
     if args.augmentation:
-        aug_fct = augment_spectra
+        aug_fcts = [ SDSS.augment_spectra, BOSS.augment_spectra ]
     else:
-        aug_fct = None
+        aug_fcts = None
 
     # define training sequence
     SED = {"data":[True,False], "decoder":True}
@@ -374,7 +372,7 @@ if __name__ == "__main__":
         print ("--- Model %s ---" % label)
 
     train(models, instruments, trainloaders, validloaders, n_epoch=n_epoch,
-          n_batch=args.batch_number, lr=args.rate, aug_fct=aug_fct, similarity=args.similarity, consistency=args.consistency, label=label, verbose=args.verbose)
+          n_batch=args.batch_number, lr=args.rate, aug_fcts=aug_fcts, similarity=args.similarity, consistency=args.consistency, label=label, verbose=args.verbose)
 
     if args.verbose:
         print("--- %s seconds ---" % (time.time()-init_t))
