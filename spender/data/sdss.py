@@ -4,6 +4,7 @@ import torch
 from torch.utils.data import DataLoader
 from torchinterp1d import Interp1d
 import astropy.io.fits as fits
+import astropy.table as aTable
 
 from ..instrument import Instrument
 from ..util import BatchedFilesDataset
@@ -17,7 +18,7 @@ class SDSS(Instrument):
 
     @classmethod
     def get_data_loader(cls, dir, which=None, tag=None, batch_size=1024, shuffle=False):
-        files = cls.collect_batches(dir, which=which, tag=tag)
+        files = cls.list_batches(dir, which=which, tag=tag)
         if which in ["train", "valid"]:
             subset = slice(0,3)
         else:
@@ -26,7 +27,7 @@ class SDSS(Instrument):
         return DataLoader(data, batch_size=batch_size)
 
     @classmethod
-    def collect_batches(cls, dir, which=None, tag=None):
+    def list_batches(cls, dir, which=None, tag=None):
         if tag is None:
             tag = "chunk1024"
         classname = cls.__mro__[0].__name__
@@ -43,6 +44,28 @@ class SDSS(Instrument):
         elif which == "valid": return valid_batches
         elif which == "train": return train_batches
         else: return batches
+
+    @classmethod
+    def save_batch(cls, dir, batch, tag=None, counter=None):
+        if tag is None:
+            tag = f"chunk{len(batch)}"
+        if counter is None:
+            counter = ""
+        classname = cls.__mro__[0].__name__
+        filename = os.path.join(dir, f"{classname}{tag}_{counter}.pkl")
+
+        with open(filename, 'wb') as f:
+            pickle.dump(batch, f)
+
+    @classmethod
+    def save_in_batches(cls, dir, ids, batch_size=1024):
+        N = len(ids)
+        idx = np.arange(0, N, batch_size)
+        batches = np.array_split(ids, idx[1:])
+        for counter, ids_ in zip(idx, batches):
+            print (f"saving batch {counter} / {N}")
+            batch = cls.make_batch(dir, ids_)
+            cls.save_batch(dir, batch, counter=counter)
 
     @classmethod
     def get_spectrum(cls, dir, plate, mjd, fiberid, return_file=False):
@@ -139,6 +162,35 @@ class SDSS(Instrument):
         for i, f in enumerate(files):
             spec[i], w[i], z[i], id[i], norm[i], zerr[i] = cls.prepare_spectrum(f)
         return spec, w, z, id, norm, zerr
+
+    @classmethod
+    def get_ids(cls, dir, selection_fct=None):
+        main_file = os.path.join(dir, "specObj-dr16.fits")
+        if not os.path.isfile(mainfile):
+            url = "https://data.sdss.org/sas/dr16/sdss/spectro/redux/specObj-dr16.fits"
+            print (f"downloading {url}, this will take a while...")
+            urllib.request.urlretrieve(url, main_file)
+
+        print(f"opening {main_file}")
+        specobj = aTable.Table.read(spec_file)
+
+        if selection_fct is None:
+            # apply default selections
+            classname = cls.__mro__[0].__name__.lower()
+            sel = ((specobj['SURVEY'] == f'{classname}  ') & # SDSS survey
+                    (specobj['PLATEQUALITY'] == 'good    ') &
+                    (specobj['TARGETTYPE'] == 'SCIENCE ')
+                   )
+            sel &= ((specobj['Z'] > 0.) & (specobj['Z_ERR'] < 1e-4))
+            sel &= ((specobj['SOURCETYPE'] == 'GALAXY                   ') &
+                         (specobj['CLASS'] == 'GALAXY'))
+        else:
+            sel = selection_fct(specobj)
+
+        plate = specobj['PLATE'][sel]
+        mjd = specobj['MJD'][sel]
+        fiberid = specobj['FIBERID'][sel]
+        return tuple(zip(plate, mjd, fiberid))
 
     @classmethod
     def augment_spectra(cls, batch, redshift=True, noise=True, mask=True):
