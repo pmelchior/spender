@@ -145,7 +145,7 @@ def get_losses(model,
     return loss, sim_loss, loss_, sim_loss_, cons_loss
 
 
-def checkpoint(accelerator, args, optimizer, scheduler, n_encoder, label, losses):
+def checkpoint(accelerator, args, optimizer, scheduler, n_encoder, outfile, losses):
     unwrapped = [accelerator.unwrap_model(args_i).state_dict() for args_i in args]
 
     accelerator.save({
@@ -153,7 +153,7 @@ def checkpoint(accelerator, args, optimizer, scheduler, n_encoder, label, losses
         "optimizer": optimizer.optimizer.state_dict(), # optimizer is an AcceleratedOptimizer object
         "scheduler": scheduler.state_dict(),
         "losses": losses,
-    }, f'{label}.pt')
+    }, outfile)
     return
 
 
@@ -162,7 +162,7 @@ def train(models,
           trainloaders,
           validloaders,
           n_epoch=200,
-          label="",
+          outfile=None,
           verbose=False,
           lr=1e-4,
           n_batch=50,
@@ -194,6 +194,9 @@ def train(models,
     # define losses to track
     n_loss = 5
     detailed_loss = np.zeros((2, n_encoder, n_epoch, n_loss))
+
+    if outfile is None:
+        outfile = "checkpoint.pt"
 
     for epoch in range(n_epoch):
 
@@ -291,15 +294,14 @@ def train(models,
 
         if epoch % 5 == 0 or epoch == n_epoch - 1:
             args = models + instruments
-            checkpoint(accelerator, args, optimizer, scheduler, n_encoder, label, detailed_loss)
+            checkpoint(accelerator, args, optimizer, scheduler, n_encoder, outfile, detailed_loss)
 
 
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("dir", help="data file directory")
-    parser.add_argument("label", help="output file label")
-    parser.add_argument("-o", "--outdir", help="output file directory", default=".")
+    parser.add_argument("outfile", help="output file name")
     parser.add_argument("-n", "--latents", help="latent dimensionality", type=int, default=2)
     parser.add_argument("-b", "--batch_size", help="batch size", type=int, default=512)
     parser.add_argument("-l", "--batch_number", help="number of batches per epoch", type=int, default=None)
@@ -348,8 +350,6 @@ if __name__ == "__main__":
     if args.verbose and args.similarity:
         print("similarity_slope:",len(ANNEAL_SCHEDULE),ANNEAL_SCHEDULE)
 
-    label = "%s/dataonly-%s.%d" % (args.outdir, args.label, args.latents)
-
     uniform_njit = [100,300]
     mock_params = [[0.4,uniform_njit]]#,[0.1,uniform_njit]]
     ncopy = len(mock_params)
@@ -372,7 +372,7 @@ if __name__ == "__main__":
         print ("--- Model %s ---" % label)
 
     train(models, instruments, trainloaders, validloaders, n_epoch=n_epoch,
-          n_batch=args.batch_number, lr=args.rate, aug_fcts=aug_fcts, similarity=args.similarity, consistency=args.consistency, label=label, verbose=args.verbose)
+          n_batch=args.batch_number, lr=args.rate, aug_fcts=aug_fcts, similarity=args.similarity, consistency=args.consistency, outfile=args.outfile, verbose=args.verbose)
 
     if args.verbose:
         print("--- %s seconds ---" % (time.time()-init_t))

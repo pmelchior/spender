@@ -9,13 +9,16 @@ from accelerate import Accelerator
 from spender import SpectrumAutoencoder
 from spender.data.sdss import SDSS
 
-def train(model, instrument, trainloader, validloader, n_epoch=200, n_batch=None, mask_skyline=True, label="", verbose=False, lr=3e-4):
+def train(model, instrument, trainloader, validloader, n_epoch=200, n_batch=None, mask_skyline=True, outfile=None, verbose=False, lr=3e-4):
 
     optimizer = optim.Adam(model.parameters(), lr=lr)
     scheduler = optim.lr_scheduler.OneCycleLR(optimizer, lr, total_steps=n_epoch)
 
     accelerator = Accelerator(mixed_precision='fp16')
     model, instrument, trainloader, validloader, optimizer = accelerator.prepare(model, instrument, trainloader, validloader, optimizer)
+
+    if outfile is None:
+        outfile = "checkpoint.pt"
 
     losses = []
     for epoch in range(n_epoch):
@@ -73,15 +76,14 @@ def train(model, instrument, trainloader, validloader, n_epoch=200, n_batch=None
                 "optimizer": optimizer.optimizer.state_dict(),
                 "scheduler": scheduler.state_dict(),
                 "losses": losses,
-            }, f'{label}.pt')
+            }, outfile)
 
 
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("dir", help="data file directory")
-    parser.add_argument("label", help="output file label")
-    parser.add_argument("-o", "--outdir", help="output file directory", default=".")
+    parser.add_argument("outfile", help="output file name")
     parser.add_argument("-n", "--latents", help="latent dimensionality", type=int, default=2)
     parser.add_argument("-b", "--batch_size", help="batch size", type=int, default=1024)
     parser.add_argument("-l", "--batch_number", help="number of batches per epoch", type=int, default=None)
@@ -115,5 +117,5 @@ if __name__ == "__main__":
             n_latent=args.latents,
             normalize=True,
     )
-    label = f'{args.outdir}/{args.label}.{args.latents}'
-    train(model, instrument, trainloader, validloader, n_epoch=args.epochs, n_batch=args.batch_number, label=label, lr=args.rate, verbose=args.verbose)
+
+    train(model, instrument, trainloader, validloader, n_epoch=args.epochs, n_batch=args.batch_number, outfile=args.outfile, lr=args.rate, verbose=args.verbose)
