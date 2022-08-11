@@ -195,11 +195,11 @@ class SDSS(Instrument):
         return tuple(zip(plate, mjd, fiberid))
 
     @classmethod
-    def augment_spectra(cls, batch, redshift=True, noise=True, mask=True):
+    def augment_spectra(cls, batch, redshift=True, noise=True, mask=True, ratio=0.05):
         spec, w, z = batch[:3]
         batch_size, spec_size = spec.shape
         device = spec.device
-        wave_obs = cls._wave_obs
+        wave_obs = cls._wave_obs.to(device)
 
         if redshift:
             # uniform distribution of redshift offsets
@@ -226,9 +226,11 @@ class SDSS(Instrument):
         if noise:
             sigma = 0.2 * torch.max(spec, 1, keepdim=True)[0]
             noise = sigma * torch.distributions.Normal(0, 1).sample(spec.shape).to(device)
+            noise_mask = torch.distributions.Uniform(0, 1).sample(spec.shape).to(device)>ratio
+            noise[noise_mask]=0
             spec_new += noise
             # add variance in quadrature, avoid division by 0
-            w_new = 1/(1/(w_new + 1e-6) + (sigma**2))
+            w_new = 1/(1/(w_new + 1e-6) + (noise**2))
 
         if mask:
             length = spec_size // 10

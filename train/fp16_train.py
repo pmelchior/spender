@@ -7,7 +7,8 @@ import torch
 from torch import nn
 from torch import optim
 from accelerate import Accelerator
-
+# allows one to run fp16_train.py from home directory
+import sys;sys.path.insert(1, './')
 from spender import SpectrumAutoencoder
 from spender.data.sdss import SDSS, BOSS
 from spender.util import mem_report, resample_to_restframe
@@ -89,6 +90,8 @@ def similarity_loss(instrument, model, spec, w, z, s, slope=0.5, individual=Fals
     # only give large loss of (dis)similarities are different (either way)
     x = s_sim-spec_sim
     sim_loss = torch.sigmoid(x)+torch.sigmoid(-slope*x-wid)
+    diag_mask = torch.diag(torch.ones(batch_size,device=device,dtype=bool))
+    sim_loss[diag_mask] = 0
 
     if individual:
         return s_sim,spec_sim,sim_loss
@@ -369,7 +372,7 @@ if __name__ == "__main__":
     init_t = time.time()
     if args.verbose:
         print("torch.cuda.device_count():",torch.cuda.device_count())
-        print ("--- Model %s ---" % label)
+        print ("--- Model %s ---" % args.outfile)
 
     train(models, instruments, trainloaders, validloaders, n_epoch=n_epoch,
           n_batch=args.batch_number, lr=args.rate, aug_fcts=aug_fcts, similarity=args.similarity, consistency=args.consistency, outfile=args.outfile, verbose=args.verbose)
