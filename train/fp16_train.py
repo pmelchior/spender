@@ -7,10 +7,10 @@ import torch
 from torch import nn
 from torch import optim
 from accelerate import Accelerator
-from torchinterp1d import Interp1d
 
-from spender import SpectrumAutoencoder, get_instrument, get_data_loader
-from spender.util import mem_report, augment_spectra, resample_to_restframe
+from spender import SpectrumAutoencoder
+from spender.data.sdss import SDSS, BOSS
+from spender.util import mem_report, resample_to_restframe
 
 
 def prepare_train(seq,niter=500):
@@ -110,7 +110,7 @@ def _losses(model,
         w[:, instrument.skyline_mask] = 0
 
     # need the latents later on if similarity=True
-    s = model.encode(spec, w=w, z=z)
+    s = model.encode(spec, w=w, aux=z.unsqueeze(1))
     loss = model.loss(spec, w, instrument, z=z, s=s)
 
     if similarity:
@@ -132,7 +132,7 @@ def get_losses(model,
     loss, sim_loss, s = _losses(model, instrument, batch, similarity=similarity, slope=slope, mask_skyline=mask_skyline)
 
     if aug_fct is not None:
-        batch_copy = aug_fct(batch, instrument)
+        batch_copy = aug_fct(batch)
         loss_, sim_loss_, s_ = _losses(model, instrument, batch_copy, similarity=similarity, slope=slope, mask_skyline=mask_skyline)
     else:
         loss_ = sim_loss_ = 0
@@ -145,20 +145,15 @@ def get_losses(model,
     return loss, sim_loss, loss_, sim_loss_, cons_loss
 
 
-def checkpoint(accelerator, args, optimizer, scheduler, n_encoder, label, losses):
+def checkpoint(accelerator, args, optimizer, scheduler, n_encoder, outfile, losses):
     unwrapped = [accelerator.unwrap_model(args_i).state_dict() for args_i in args]
 
-    model_unwrapped = unwrapped[:n_encoder]
-    instruments_unwrapped = unwrapped[n_encoder:2*n_encoder]
-
-    # checkpoints
     accelerator.save({
-        "model": model_unwrapped,
-        "instrument": instruments_unwrapped,
+        "model": unwrapped,
         "optimizer": optimizer.optimizer.state_dict(), # optimizer is an AcceleratedOptimizer object
         "scheduler": scheduler.state_dict(),
         "losses": losses,
-    }, f'{label}.pt')
+    }, outfile)
     return
 
 
@@ -167,12 +162,12 @@ def train(models,
           trainloaders,
           validloaders,
           n_epoch=200,
-          label="",
+          outfile=None,
           verbose=False,
           lr=1e-4,
           n_batch=50,
           mask_skyline=True,
-          aug_fct=None,
+          aug_fcts=None,
           similarity=True,
           consistency=True,
           ):
@@ -199,6 +194,9 @@ def train(models,
     # define losses to track
     n_loss = 5
     detailed_loss = np.zeros((2, n_encoder, n_epoch, n_loss))
+
+    if outfile is None:
+        outfile = "checkpoint.pt"
 
     for epoch in range(n_epoch):
 
@@ -232,7 +230,7 @@ def train(models,
                     models[which],
                     instruments[which],
                     batch,
-                    aug_fct=aug_fct,
+                    aug_fct=aug_fcts[which],
                     similarity=similarity,
                     consistency=consistency,
                     slope=slope,
@@ -270,7 +268,7 @@ def train(models,
                         models[which],
                         instruments[which],
                         batch,
-                        aug_fct=aug_fct,
+                        aug_fct=aug_fcts[which],
                         similarity=similarity,
                         consistency=consistency,
                         slope=slope,
@@ -296,15 +294,14 @@ def train(models,
 
         if epoch % 5 == 0 or epoch == n_epoch - 1:
             args = models + instruments
-            checkpoint(accelerator, args, optimizer, scheduler, n_encoder, label, detailed_loss)
+            checkpoint(accelerator, args, optimizer, scheduler, n_encoder, outfile, detailed_loss)
 
 
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("dir", help="data file directory")
-    parser.add_argument("label", help="output file label")
-    parser.add_argument("-o", "--outdir", help="output file directory", default=".")
+    parser.add_argument("outfile", help="output file name")
     parser.add_argument("-n", "--latents", help="latent dimensionality", type=int, default=2)
     parser.add_argument("-b", "--batch_size", help="batch size", type=int, default=512)
     parser.add_argument("-l", "--batch_number", help="number of batches per epoch", type=int, default=None)
@@ -316,9 +313,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # define instruments
-    instrument_names = ["SDSS", "BOSS"]
-    instruments = [ get_instrument(name) for name in instrument_names ]
-    n_encoder = len(instrument_names)
+    instruments = [ SDSS(), BOSS() ]
+    n_encoder = len(instruments)
 
     # restframe wavelength for reconstructed spectra
     # Note: represents joint dataset wavelength range
@@ -330,14 +326,14 @@ if __name__ == "__main__":
         print ("Restframe:\t{:.0f} .. {:.0f} A ({} bins)".format(lmbda_min, lmbda_max, bins))
 
     # data loaders
-    trainloaders = [ get_data_loader(args.dir, name, which="train",  batch_size=args.batch_size, shuffle=True) for name in instrument_names ]
-    validloaders = [ get_data_loader(args.dir, name, which="valid", batch_size=args.batch_size) for name in instrument_names ]
+    trainloaders = [ inst.get_data_loader(args.dir, which="train",  batch_size=args.batch_size, shuffle=True) for inst in instruments ]
+    validloaders = [ inst.get_data_loader(args.dir, which="valid", batch_size=args.batch_size) for inst in instruments ]
 
     # get augmentation function
     if args.augmentation:
-        aug_fct = augment_spectra
+        aug_fcts = [ SDSS.augment_spectra, BOSS.augment_spectra ]
     else:
-        aug_fct = None
+        aug_fcts = None
 
     # define training sequence
     SED = {"data":[True,False], "decoder":True}
@@ -354,19 +350,18 @@ if __name__ == "__main__":
     if args.verbose and args.similarity:
         print("similarity_slope:",len(ANNEAL_SCHEDULE),ANNEAL_SCHEDULE)
 
-    label = "%s/dataonly-%s.%d" % (args.outdir, args.label, args.latents)
-
     uniform_njit = [100,300]
     mock_params = [[0.4,uniform_njit]]#,[0.1,uniform_njit]]
     ncopy = len(mock_params)
 
     # define and train the model
     n_hidden = (64, 256, 1024)
-    models = [ SpectrumAutoencoder(wave_rest,
-                                    n_latent=args.latents,
-                                    n_hidden=n_hidden,
-                                    normalize=True),
-              ] * 2
+    models = [ SpectrumAutoencoder(instrument,
+                                   wave_rest,
+                                   n_latent=args.latents,
+                                   n_hidden=n_hidden,
+                                   normalize=True)
+              for instrument in instruments ]
     # use same decoder
     models[1].decoder = models[0].decoder
 
@@ -377,7 +372,7 @@ if __name__ == "__main__":
         print ("--- Model %s ---" % label)
 
     train(models, instruments, trainloaders, validloaders, n_epoch=n_epoch,
-          n_batch=args.batch_number, lr=args.rate, aug_fct=aug_fct, similarity=args.similarity, consistency=args.consistency, label=label, verbose=args.verbose)
+          n_batch=args.batch_number, lr=args.rate, aug_fcts=aug_fcts, similarity=args.similarity, consistency=args.consistency, outfile=args.outfile, verbose=args.verbose)
 
     if args.verbose:
         print("--- %s seconds ---" % (time.time()-init_t))

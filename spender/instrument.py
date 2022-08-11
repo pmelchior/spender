@@ -1,25 +1,26 @@
-import torch
+import torch, os
+import numpy as np
 from torch import nn
 
-from .util import skylines_mask
-
-class Instrument(nn.Module):
+class BaseInstrument(nn.Module):
     def __init__(self,
                  wave_obs,
                  lsf=None,
                  calibration=None,
-                 name=None,
                 ):
 
-        super(Instrument, self).__init__()
+        super(BaseInstrument, self).__init__()
 
         self.lsf = lsf
         self.calibration = calibration
-        self.name = name
 
         # register wavelength tensors on the same device as the entire model
         self.register_buffer('wave_obs', wave_obs)
         self.register_buffer('skyline_mask', skylines_mask(wave_obs))
+
+    @property
+    def name(self):
+        return self.__class__.__name__
 
     def set_lsf(self, lsf_kernel, wave_kernel, wave_rest, requires_grad=False):
         # resample in wave_rest pixels
@@ -35,11 +36,44 @@ class Instrument(nn.Module):
         self.lsf = nn.Conv1d(1, 1, len(lsf_kernel_rest), bias=False, padding='same')
         self.lsf.weight = nn.Parameter(lsf_kernel_rest.flip(0).reshape(1,1,-1), requires_grad=requires_grad)
 
-def get_instrument(name, lsf=None, calibration=None):
-    assert name in ["SDSS", "BOSS"]
-    if name == "SDSS":
-        lower, upper = 3.578, 3.97
-    elif name == "BOSS":
-        lower, upper = 3.549, 4.0175
-    wave_obs = 10**torch.arange(lower, upper, 0.0001)
-    return Instrument(wave_obs, lsf=lsf, calibration=calibration, name=name)
+
+def skylines_mask(waves, intensity_limit=2, radii=5):
+    this_dir, this_filename = os.path.split(__file__)
+    filename = os.path.join(this_dir, "data", "sky-lines.txt")
+    f=open(filename,"r")
+    content = f.readlines()
+    f.close()
+
+    skylines = [[10*float(line.split()[0]),float(line.split()[1])] for line in content if not line[0]=="#" ]
+    skylines = np.array(skylines)
+
+    n_lines = 0
+    mask = ~(waves>0)
+
+    for line in skylines:
+        line_pos, intensity = line
+        if line_pos>waves.max():continue
+        if intensity<intensity_limit:continue
+        n_lines += 1
+        mask[(waves<(line_pos+radii))*(waves>(line_pos-radii))] = True
+
+    non_zero = torch.count_nonzero(mask)
+    return mask
+
+# allow registry of new instruments
+# see https://effectivepython.com/2015/02/02/register-class-existence-with-metaclasses
+instrument_register = {}
+
+def register_class(target_class):
+    instrument_register[target_class.__name__] = target_class
+
+class Meta(type):
+    def __new__(meta, name, bases, class_dict):
+        cls = type.__new__(meta, name, bases, class_dict)
+        # remove those that are directly derived from the base class
+        if BaseInstrument not in bases:
+            register_class(cls)
+        return cls
+
+class Instrument(BaseInstrument, metaclass=Meta):
+    pass
