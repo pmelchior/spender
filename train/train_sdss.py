@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-import argparse
+import argparse, os
 import numpy as np
 import torch
 from torch import nn
@@ -9,7 +9,22 @@ from accelerate import Accelerator
 from spender import SpectrumAutoencoder
 from spender.data.sdss import SDSS
 
-def train(model, instrument, trainloader, validloader, n_epoch=200, n_batch=None, mask_skyline=True, outfile=None, verbose=False, lr=3e-4):
+
+def load_model(filename, model, instrument):
+    device = instrument.wave_obs.device
+    model_struct = torch.load(filename, map_location=device)
+    # backwards compat: add instrument to encoder
+    try:
+        model.load_state_dict(model_struct['model'])
+    except RuntimeError:
+        model_struct['model']['encoder.instrument.wave_obs']= instrument.wave_obs
+        model_struct['model']['encoder.instrument.skyline_mask']= instrument.skyline_mask
+        model.load_state_dict(model_struct['model'])
+    losses = model_struct['losses']
+    return model, losses
+
+
+def train(model, instrument, trainloader, validloader, n_epoch=200, n_batch=None, mask_skyline=True, outfile=None, losses=None, verbose=False, lr=3e-4):
 
     optimizer = optim.Adam(model.parameters(), lr=lr)
     scheduler = optim.lr_scheduler.OneCycleLR(optimizer, lr, total_steps=n_epoch)
@@ -20,8 +35,20 @@ def train(model, instrument, trainloader, validloader, n_epoch=200, n_batch=None
     if outfile is None:
         outfile = "checkpoint.pt"
 
-    losses = []
-    for epoch in range(n_epoch):
+    epoch = 0
+    if losses is None:
+        losses = []
+    else:
+        try:
+            epoch = len(losses)
+            n_epoch += epoch
+            if verbose:
+                train_loss, valid_loss = losses[-1]
+                print(f'====> Epoch: {epoch-1} TRAINING Loss: {train_loss:.3e}  VALIDATION Loss: {valid_loss:.3e}')
+        except: # OK if losses are empty
+            pass
+
+    for epoch_ in range(epoch, n_epoch):
         model.train()
         train_loss = 0.
         n_sample = 0
@@ -65,12 +92,11 @@ def train(model, instrument, trainloader, validloader, n_epoch=200, n_batch=None
         losses.append((train_loss, valid_loss))
 
         if verbose:
-            print('====> Epoch: %i TRAINING Loss: %.2e VALIDATION Loss: %.2e' % (epoch, train_loss, valid_loss))
+            print(f'====> Epoch: {epoch_} TRAINING Loss: {train_loss:.3e}  VALIDATION Loss: {valid_loss:.3e}')
 
         # checkpoints
-        if epoch % 5 == 0 or epoch == n_epoch - 1:
+        if epoch_ % 5 == 0 or epoch_ == n_epoch - 1:
             unwrapped_model = accelerator.unwrap_model(model)
-            unwrapped_instrument = accelerator.unwrap_model(instrument)
             accelerator.save({
                 "model": unwrapped_model.state_dict(),
                 "optimizer": optimizer.optimizer.state_dict(),
@@ -89,6 +115,7 @@ if __name__ == "__main__":
     parser.add_argument("-l", "--batch_number", help="number of batches per epoch", type=int, default=None)
     parser.add_argument("-e", "--epochs", help="number of epochs", type=int, default=200)
     parser.add_argument("-r", "--rate", help="learning rate", type=float, default=1e-3)
+    parser.add_argument("-C", "--clobber", help="continue training of existing model", action="store_true")
     parser.add_argument("-v", "--verbose", help="verbose printing", action="store_true")
     args = parser.parse_args()
 
@@ -118,4 +145,13 @@ if __name__ == "__main__":
             normalize=True,
     )
 
-    train(model, instrument, trainloader, validloader, n_epoch=args.epochs, n_batch=args.batch_number, outfile=args.outfile, lr=args.rate, verbose=args.verbose)
+    # check if outfile already exists, continue only of -c is set
+    if os.path.isfile(args.outfile) and not args.clobber:
+        raise SystemExit("\nOutfile exists! Set option -C to continue training.")
+    losses = None
+    if os.path.isfile(args.outfile):
+        if args.verbose:
+            print (f"\nLoading file {args.outfile}")
+        model, losses = load_model(args.outfile, model, instrument)
+
+    train(model, instrument, trainloader, validloader, n_epoch=args.epochs, n_batch=args.batch_number, outfile=args.outfile, losses=losses, lr=args.rate, verbose=args.verbose)
