@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-import time, argparse
+import time, argparse, os
 import numpy as np
 import functools
 import torch
@@ -156,6 +156,22 @@ def checkpoint(accelerator, args, optimizer, scheduler, n_encoder, outfile, loss
     }, outfile)
     return
 
+def load_model(filename, models, instruments):
+    device = instruments[0].wave_obs.device
+    model_struct = torch.load(filename, map_location=device)
+
+    for i, model in enumerate(models):
+        # backwards compat: add instrument to encoder
+        try:
+            model.load_state_dict(model_struct['model'][i])
+        except RuntimeError:
+            model_struct['model'][i]['encoder.instrument.wave_obs']= instruments[i].wave_obs
+            model_struct['model'][i]['encoder.instrument.skyline_mask']= instruments[i].skyline_mask
+            model.load_state_dict(model_struct[i]['model'])
+
+    losses = model_struct['losses']
+    return model, losses
+
 
 def train(models,
           instruments,
@@ -163,6 +179,7 @@ def train(models,
           validloaders,
           n_epoch=200,
           outfile=None,
+          losses=None,
           verbose=False,
           lr=1e-4,
           n_batch=50,
@@ -193,20 +210,36 @@ def train(models,
 
     # define losses to track
     n_loss = 5
-    detailed_loss = np.zeros((2, n_encoder, n_epoch, n_loss))
+    epoch = 0
+    if losses is None:
+        detailed_loss = np.zeros((2, n_encoder, n_epoch, n_loss))
+    else:
+        try:
+            epoch = len(losses)
+            n_epoch += epoch
+            detailed_loss = np.zeros((2, n_encoder, n_epoch, n_loss))
+            detailed_loss[:, :, :epoch, :] = losses
+            if verbose:
+                losses = tuple(detailed_loss[0, :, epoch-1, :])
+                vlosses = tuple(detailed_loss[1, :, epoch-1, :])
+                print(f'====> Epoch: {epoch-1}')
+                print('TRAINING Losses:', losses)
+                print('VALIDATION Losses:', vlosses)
+        except: # OK if losses are empty
+            pass
 
     if outfile is None:
         outfile = "checkpoint.pt"
 
-    for epoch in range(n_epoch):
+    for epoch_ in range(epoch, n_epoch):
 
-        mode = train_sequence[ladder[epoch]]
+        mode = train_sequence[ladder[epoch_ - epoch]]
 
         # turn on/off model decoder
         for p in models[0].decoder.parameters():
             p.requires_grad = mode['decoder']
 
-        slope = ANNEAL_SCHEDULE[epoch%len(ANNEAL_SCHEDULE)]
+        slope = ANNEAL_SCHEDULE[(epoch_ - epoch)%len(ANNEAL_SCHEDULE)]
         if verbose and similarity:
             print("similarity info:",slope)
 
@@ -246,13 +279,13 @@ def train(models,
                 optimizer.zero_grad()
 
                 # logging: training
-                detailed_loss[0][which][epoch] += tuple( l.item() if hasattr(l, 'item') else 0 for l in losses )
+                detailed_loss[0][which][epoch_] += tuple( l.item() if hasattr(l, 'item') else 0 for l in losses )
                 n_sample += batch_size
 
                 # stop after n_batch
                 if n_batch is not None and k == n_batch - 1:
                     break
-            detailed_loss[0][which][epoch] /= n_sample
+            detailed_loss[0][which][epoch_] /= n_sample
 
         scheduler.step()
 
@@ -275,25 +308,25 @@ def train(models,
                         mask_skyline=mask_skyline,
                     )
                     # logging: validation
-                    detailed_loss[1][which][epoch] += tuple( l.item() if hasattr(l, 'item') else 0 for l in losses )
+                    detailed_loss[1][which][epoch_] += tuple( l.item() if hasattr(l, 'item') else 0 for l in losses )
                     n_sample += batch_size
 
                     # stop after n_batch
                     if n_batch is not None and k == n_batch - 1:
                         break
 
-                detailed_loss[1][which][epoch] /= n_sample
+                detailed_loss[1][which][epoch_] /= n_sample
 
         if verbose:
             mem_report()
-            losses = tuple(detailed_loss[0, :, epoch, :])
-            vlosses = tuple(detailed_loss[1, :, epoch, :])
+            losses = tuple(detailed_loss[0, :, epoch_, :])
+            vlosses = tuple(detailed_loss[1, :, epoch_, :])
             print('====> Epoch: %i'%(epoch))
             print('TRAINING Losses:', losses)
             print('VALIDATION Losses:', vlosses)
 
-        if epoch % 5 == 0 or epoch == n_epoch - 1:
-            args = models + instruments
+        if epoch_ % 5 == 0 or epoch_ == n_epoch - 1:
+            args = models
             checkpoint(accelerator, args, optimizer, scheduler, n_encoder, outfile, detailed_loss)
 
 
@@ -309,6 +342,7 @@ if __name__ == "__main__":
     parser.add_argument("-a", "--augmentation", help="add augmentation loss", action="store_true")
     parser.add_argument("-s", "--similarity", help="add similarity loss", action="store_true")
     parser.add_argument("-c", "--consistency", help="add consistency loss", action="store_true")
+    parser.add_argument("-C", "--clobber", help="continue training of existing model", action="store_true")
     parser.add_argument("-v", "--verbose", help="verbose printing", action="store_true")
     args = parser.parse_args()
 
@@ -369,10 +403,19 @@ if __name__ == "__main__":
     init_t = time.time()
     if args.verbose:
         print("torch.cuda.device_count():",torch.cuda.device_count())
-        print ("--- Model %s ---" % label)
+        print (f"--- Model {args.outfile} ---")
+
+    # check if outfile already exists, continue only of -c is set
+    if os.path.isfile(args.outfile) and not args.clobber:
+        raise SystemExit("\nOutfile exists! Set option -C to continue training.")
+    losses = None
+    if os.path.isfile(args.outfile):
+        if args.verbose:
+            print (f"\nLoading file {args.outfile}")
+        model, losses = load_model(args.outfile, models, instruments)
 
     train(models, instruments, trainloaders, validloaders, n_epoch=n_epoch,
-          n_batch=args.batch_number, lr=args.rate, aug_fcts=aug_fcts, similarity=args.similarity, consistency=args.consistency, outfile=args.outfile, verbose=args.verbose)
+          n_batch=args.batch_number, lr=args.rate, aug_fcts=aug_fcts, similarity=args.similarity, consistency=args.consistency, outfile=args.outfile, losses=losses, verbose=args.verbose)
 
     if args.verbose:
         print("--- %s seconds ---" % (time.time()-init_t))
