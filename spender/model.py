@@ -71,7 +71,7 @@ class SpectrumEncoder(nn.Module):
             convs.append(nn.Sequential(conv, norm, act, drop))
         return tuple(convs)
 
-    def forward(self, x, w=None, aux=None):
+    def _downsample(self, x, w=None):
         N, D = x.shape
         # spectrum compression
         x = x.unsqueeze(1)
@@ -90,6 +90,12 @@ class SpectrumEncoder(nn.Module):
             w = self.pool1(self.conv1w(w))
             w = self.pool2(self.conv2w(w))
             aw = self.conv3w(w)
+
+        return h, a, aw
+
+    def forward(self, x, w=None, aux=None):
+        # run through CNNs
+        h, a, aw = self._downsample(x, w=w)
 
         # modulate signal attention with weight attention
         a = self.softmax(a * aw)
