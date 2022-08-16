@@ -71,7 +71,7 @@ class SpectrumEncoder(nn.Module):
             convs.append(nn.Sequential(conv, norm, act, drop))
         return tuple(convs)
 
-    def forward(self, x, w=None, aux=None):
+    def _downsample(self, x, w=None):
         N, D = x.shape
         # spectrum compression
         x = x.unsqueeze(1)
@@ -90,6 +90,12 @@ class SpectrumEncoder(nn.Module):
             w = self.pool1(self.conv1w(w))
             w = self.pool2(self.conv2w(w))
             aw = self.conv3w(w)
+
+        return h, a, aw
+
+    def forward(self, x, w=None, aux=None):
+        # run through CNNs
+        h, a, aw = self._downsample(x, w=w)
 
         # modulate signal attention with weight attention
         a = self.softmax(a * aw)
@@ -206,8 +212,8 @@ class BaseAutoencoder(nn.Module):
         s, spectrum_restframe, spectrum_observed = self._forward(x, w=w,  instrument=instrument, z=z, s=s, aux=aux)
         return spectrum_observed
 
-    def loss(self, x, w, instrument=None, z=None, s=None, individual=False):
-        spectrum_observed = self.forward(x, w=w, instrument=instrument, z=z, s=s)
+    def loss(self, x, w, instrument=None, z=None, s=None, aux=None, individual=False):
+        spectrum_observed = self.forward(x, w=w, instrument=instrument, z=z, s=s, aux=aux)
         return self._loss(x, w, spectrum_observed, individual=individual)
 
     def _loss(self, x, w, spectrum_observed, individual=False):
