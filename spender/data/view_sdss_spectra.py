@@ -26,7 +26,7 @@ bins = 7000#int(data['wave'].shape[0] * (1 + data['z'].max()))
 wave_rest = torch.linspace(lmbda_min, lmbda_max, bins, dtype=torch.float32)
 print ("Restframe:\t{:.0f} .. {:.0f} A ({} bins)".format(lmbda_min, lmbda_max, bins))
 
-norm_latent = False
+
 
 def permute_indices(length,n_redundant=1):
     wrap_indices = torch.arange(length).repeat(n_redundant)
@@ -62,36 +62,19 @@ def merge(merge_dir,name=''):
              save_all=True, append_images=im_list[1:])
     return
 
-def load_model(fileroot, instruments, wave_rest,
-               n_latent=2, normalize=True):
-    if not torch.cuda.is_available():
-        device = torch.device('cpu')
-    else:device = None
+def load_model(path, instruments, wave_rest,n_latent=2, normalize=True):
+    device = wave_rest.device
+    mdict = torch.load(path, map_location=device)
 
-    path = f'{fileroot}'
-    print("path:",path)
-    model = torch.load(path, map_location=device)
-
-    if not type(model)==dict: 
-        print("Version conflict!")
-        exit()
-    
-    mdict = model
-    print("states:",mdict.keys())
-    
-    model = []
-    if "n_latent" in mdict:n_latent=mdict["n_latent"]
+    models = []
     for j in range(len(instruments)):
-        loadm = SpectrumAutoencoder(instruments[j],
+        model = SpectrumAutoencoder(instruments[j],
                                     wave_rest,
                                     n_latent=n_latent,
                                     normalize=normalize)
-        loadm.load_state_dict(mdict["model"][j])
-        loadm.eval()
-        model.append(loadm)
-
-    return model,mdict["losses"]
-
+        model.load_state_dict(mdict["model"][j])
+        models.append(model)
+    return models,mdict["losses"]
 
 def sdss_name(plate, mjd, fiberid):
     flocal = os.path.join(dat_dir, 'sdss-spectra/spec-%s-%i-%s.fits' % (str(plate).zfill(4), mjd, str(fiberid).zfill(4)))
@@ -618,21 +601,17 @@ def spectra_multiplot(params, instruments, which, offset=3,
         
         axs[2].legend(loc=4)
         #if plot:plt.tight_layout()
-
-        if norm_latent:
-            embed[j]=embed[j]/bg_med[j]
         print("recon shape:",recon.shape)
         # evaluate similarity loss
         dim = recon.shape[0]
         rand = [dim-1]*dim
-        
-        recon,recon_w = resample_to_restframe(waves[j],wrest,
-                                              recon,recon_w,recon_z)
-        s_sim,spec_sim,sim_loss = similarity_loss(recon,recon_w,embed[j],
-                                                  verbose=True,rand=rand)
-        print("s_chi:",s_sim)
-        print("spec_chi:",spec_sim)
-        print("similarity loss:",sim_loss)
+
+        s_sim,spec_sim,sim_loss = similarity_loss(\
+        instruments[j],inspect_mix[j],recon,recon_w,recon_z,embed[j],
+        individual=True)
+        print("s_chi:",s_sim[-1])
+        print("spec_chi:",spec_sim[-1])
+        print("similarity loss:",sim_loss[-1])
     
 
     cross_loss = []
@@ -696,7 +675,8 @@ def plot_embedding(embedded,color_code,name,cmap=None, c_range=[0,0.5], zorder=[
     ax.scatter(embedding_boss[0],embedding_boss[1],s=ms,vmin=c_range[0],vmax=c_range[1], 
                edgecolors='b',c=color_code[1],alpha=alpha[1],cmap=cmap,label=labels[1],zorder=zorder[1])
 
-    cbar = plt.colorbar(img)
+    cbar = plt.colorbar(img,ax=ax,location="right",fraction=0.05,
+                        shrink=0.8,pad=0.01)
     cbar.set_label(cbar_label)
     
     
@@ -752,35 +732,72 @@ def resample_to_restframe(wave_obs,wave_rest,y,w,z):
     exit()
     return yrest,wrest
 
-# translates spectra similarity to latent space similarity
-def similarity_loss(spec,w,s,verbose=False,rand=[],wid=5,slope=0.5):
-    batch_size, s_size = s.shape
-    if rand==[]:rand = permute_indices(batch_size)
-    new_w = 1/(w**(-1)+w[rand]**(-1))
-    D = (new_w > 1e-6).sum(dim=1)
-    spec_sim = torch.sum(new_w*(spec[rand]-spec)**2,dim=1)/D
-    s_sim = torch.sum((s[rand]-s)**2,dim=1)/s_size
+def similarity_loss(instrument, model, spec, w, z, s, slope=1.0, individual=False, wid=5):
+    spec,w = resample_to_restframe(instrument.wave_obs,
+                                   model.decoder.wave_rest,
+                                   spec,w,z)
+
+    batch_size, spec_size = spec.shape
+    _, s_size = s.shape
+    device = s.device
+
+    # pairwise dissimilarity of spectra
+    S = (spec[None,:,:] - spec[:,None,:])**2
+
+    # pairwise weights
+    non_zero = w > 0
+    W = (1 / w)[None,:,:] + (1 / w)[:,None,:]
+    W = (non_zero[None,:,:] * non_zero[:,None,:]) / W
+
+    # dissimilarity of spectra
+    # of order unity, larger for spectrum pairs with more comparable bins
+    spec_sim = (W * S).sum(-1) / spec_size
+
+    # dissimilarity of latents
+    s_sim = ((s[None,:,:] - s[:,None,:])**2).sum(-1) / s_size
+
+    # only give large loss of (dis)similarities are different (either way)
     x = s_sim-spec_sim
-    #x = torch.sqrt(s_sim)-torch.sqrt(spec_sim)
-    sim_loss = torch.sigmoid(x)+torch.sigmoid(-slope*x-wid)
-    if verbose:return s_sim,spec_sim,sim_loss
-    else: return sim_loss.sum()
+    sim_loss = torch.sigmoid(slope*x-wid/2)+torch.sigmoid(-slope*x-wid/2)
+    diag_mask = torch.diag(torch.ones(batch_size,device=device,dtype=bool))
+    sim_loss[diag_mask] = 0
 
+    if individual:
+        return s_sim,spec_sim,sim_loss
 
-def plot_detailedloss(loss,ax=None,fs=12):
+    # total loss: sum over N^2 terms,
+    # needs to have amplitude of N terms to compare to fidelity loss
+    return sim_loss.sum() / batch_size
+
+def plot_annealing_schedule(slope=[0,1], wid=5, cycle=10, xrange=(-30,10),
+                            cmap="inferno",lw=2):
+    k1 = np.arange(slope[0],slope[1], 1.0/cycle)
+    x = torch.arange(xrange[0],xrange[1],0.01)
+    get_cmap = matplotlib.cm.get_cmap(cmap)
+    fig,ax=plt.subplots(figsize=(5,5),dpi=200)
+    for i in range(cycle):
+        #loss = torch.sigmoid(x)+torch.sigmoid(-k1[i]*x-wid)
+        loss = torch.sigmoid(k1[i]*x-wid/2)+torch.sigmoid(-k1[i]*x-wid/2)
+        ax.plot(x,loss,lw=lw,c=get_cmap(i/cycle),label="$k_1=%.2f$"%(k1[i]))
+    ax.legend(loc="best")
+    ax.set_xlabel("$(\Delta s)^2-(\Delta y)^2$")
+    ax.set_ylabel("loss")
+    plt.savefig("annealing.png",dpi=200)
+    return
+
+def plot_detailedloss(loss, ax=None, fs=12):
     print("loss:",loss.shape)
     epoch = max(np.nonzero(loss[0][0])[0])+1
     ep = np.arange(epoch)
     print("epoch:",epoch)
     if not ax:fig,ax=plt.subplots(figsize=(8,6),dpi=200)
-    name = ["SDSS","BOSS"]
+    name = ["S","B"]
     labels = ["fidelity","similarity",
               "aug_fidelity","aug_similarity","consistency"]
     colors = [['k','r','k','r',"c"],["b","orange","b","orange","pink"]]
     style = ["-","-","--","--","-"]
     alphas = [1,1,1,1,1]
     lws = [2,2,2,2,2]
-    #minimum = np.min(loss[:2])
     for j,nn in enumerate(name):
         locloss = np.array(loss[1][j]).T
         print("locloss:", locloss.shape)
@@ -794,29 +811,151 @@ def plot_detailedloss(loss,ax=None,fs=12):
         
     #ax.axhline(0.5,ls="--",color="b",label="loss = 0.5")
     ax.set_xlabel("epoch",fontsize=fs)
-    ax.set_ylabel("loss",fontsize=fs)
-    #ax.set_xlim(xlim)
-    #ax.set_ylim(ylim)
+    #ax.set_ylabel("loss",fontsize=fs)
     ax.legend(loc="best",fontsize=fs,ncol=2)
     ax.set_title("Validation Losses",fontsize=fs)
-    plt.savefig("detailed_loss.png",dpi=200)
-    #exit()
-    #if min(latest)==minimum:
-    #     print("%.2f is the minimum!"%minimum)
+    #plt.savefig("detailed_loss.png",dpi=200)
+    return
+
+def plot_similarity(model, data, fs=15, n_sim = 100, ax=None):
+    specs,weights,redshifts,instruments,names = data
+    rands = [np.random.randint(len(redshifts[0]), size=n_sim),
+             np.random.randint(len(redshifts[1]), size=n_sim)]
+    
+    losses = []; colors = ["salmon","skyblue"];cmap = "rainbow"
+    if not ax:
+        fig,ax = plt.subplots(figsize=(8,5),constrained_layout=True)
+    
+    for j in range(len(instruments)):
+        rand = rands[j]
+        s, _, _ = model[j]._forward(specs[j][rand], weights[j][rand],
+                                    instruments[j], redshifts[j][rand])
+
+        detail = similarity_loss(instruments[j],model[j],
+                                 specs[j][rand],weights[j][rand],
+                                 redshifts[j][rand],s,individual=True)
+
+        s_sim,spec_sim,sim_loss = [i.detach().cpu() for i in detail]
+        print("\ns_sim = %.2f +/- %.2f"%(s_sim.mean(),s_sim.std()))
+        print("spec_sim = %.2f +/- %.2f\n"%(spec_sim.mean(),spec_sim.std()))
+        label_j = "%s(%.1e,%.1e)"%(names[j],bg[j][0],bg[j][1])
+        img = ax.scatter(spec_sim,s_sim,c=sim_loss, vmin=0, vmax=1,
+                         cmap=cmap,edgecolors=colors[j],
+                         label=label_j)
+        losses.append(sim_loss.mean())
+
+    comment = "similarity loss: %.3f, %.3f"%(losses[0],losses[1])
+    cbar = plt.colorbar(img,ax=ax,location="right",fraction=0.05,
+                        shrink=0.8, pad=0.01)
+    cbar.set_label("similarity loss",fontsize=fs)
+    ax.set_title(comment,fontsize=fs)
+    ax.legend(loc="best",fontsize=fs)
+    ax.set_ylabel("latent $\chi^2$",fontsize=fs)
+    ax.set_xlabel("spectral $\chi^2$",fontsize=fs)
+    #ax.set_xlim(0,30)
+    #ax.set_ylim(0,0.1)
+    #plt.savefig("similaity.png",dpi=200)
+    return
+
+def plot_joint_samples(s_mat, model, data, zorder=[0,0], alpha=[0.2, 0.2],
+                       n_joint = 200, ax=None, xlim=None,ylim=None):
+    specs,weights,redshifts,instruments,wh_joints = data
+    rand = np.array(random.sample(range(len(wh_joints[0])), n_joint))
+    s_track = []
+    mark_ids = rand
+    for j in range(n_encoder):
+        inds = np.array(wh_joints[j])[rand]
+        s, _, _ = model[j]._forward(specs[j][inds], weights[j][inds],
+                                    instruments[j],redshifts[j][inds])
+
+        if norm_latent:s=s/bg[j]
+        s = s.detach().numpy().T
+        s_track.append(s)
+    diff = np.sqrt(np.sum((s_track[0]-s_track[1])**2, axis=0))
+    med_diff = np.median(diff)
+
+    dist_rank = np.argsort(diff)[::-1]
+    diff = diff[dist_rank]
+    mask_names = mark_ids[dist_rank]
+
+    text = "Rank   No.   Distance\n"
+    for ii in range(10):
+        text += "%d         %d       %.2f\n"%(ii+1,mask_names[ii],diff[ii])
+    text += "(median distance = %.3f)"%(med_diff)
+    colors = [['gold','navy']]
+    
+    embedded_batch = [s_mat,s_track]
+    comment = [{"ID":mark_ids,"wh":0, "pos":(-10,0),"fs":5}]
+    if not ax:fig,ax = plt.subplots(figsize=(12,8),dpi=200)
+    plot_embedding(embedded_batch,embed_color,name= ["target","augment"],
+                   comment=comment,
+                   cbar_label=cbar_label, c_range=c_range,cmap=cmap, 
+                   zorder=zorder, alpha=alpha,
+                   markers=["o","^","s"],color=colors, ax=ax,mute=True)
+    ax.set_title("Random joint targets (N=%d)"%n_joint)
+    ax.text(xlim[0]+0.5*(xlim[1]-xlim[0]),ylim[0]+0.1*(ylim[1]-ylim[0]),text,fontsize=15)
+    ax.set_xlim(xlim);ax.set_ylim(ylim)
+    return
+
+def plot_model(data, model, axs=[],fs=15):
+    specs,weights,redshifts,instruments,wh_joints=data
+    # visualize 10 latent space
+    if axs==[]:
+        fig,axs = plt.subplots(1,3,figsize=(8,4),dpi=200,
+                               constrained_layout=True,
+                               gridspec_kw={'width_ratios': [1.5, 1, 1]})
+    losses = np.zeros((4,epoch))
+    losses[0] = loss[0][0][:epoch].sum(axis=1)
+    losses[1] = loss[1][0][:epoch].sum(axis=1)
+    losses[2] = loss[0][1][:epoch].sum(axis=1)
+    losses[3] = loss[1][1][:epoch].sum(axis=1)
+    losses = 0.5*losses
+    print("\n\n",model_file,"losses:",losses.shape)
+    plot_loss(losses,ax=axs[0],fs=fs)
+    
+    np.random.seed(23)#42 
+    rand = np.random.randint(len(wh_joints[0]), size=10)
+    for j in range(n_encoder):
+        ax=axs[j+1]
+        inds = np.array(wh_joints[j])[rand]
+        zlist = redshifts[j][inds].detach().numpy()
+        rank = np.argsort(zlist)
+        inds = inds[rank]
+        s, _, _ = model[j]._forward(specs[j][inds], weights[j][inds],
+                                    instruments[j],redshifts[j][inds])
+        s = s.detach().numpy()
+        batch_size,s_size = s.shape
+        locid = ["z=%.2f(%d)"%(n,ii) for ii,n in zip(rand[rank],redshifts[j][inds])] 
+
+        vmin,vmax=s.min(),s.max()
+        print("smin,smax:",vmin,vmax)
+        ax.matshow(s,vmax=vmax,vmin=vmin)#,cmap='winter')
+        ax.set_xticks([]);ax.set_yticks([])
+        ax.set_xlabel("latent variables");ax.set_ylabel(names[j])
+        if j>0: continue
+        for i in range(len(locid)):
+            ax.text(2,i+0.2,locid[i],c="k", weight='bold', 
+                    fontsize=12,alpha=1)
+    axs[0].set_title("(%s) best loss = %.2f"%(model_file,min(losses[1])),fontsize=fs)
     return
 
 #-------------------------------------------------------
+import matplotlib
+plot_annealing_schedule()
+
 instrument_names = ["SDSS", "BOSS"]
 instruments = [ SDSS(), BOSS() ]
 ins_sdss,ins_boss = instruments
 n_encoder = len(instrument_names)
 
 option_normalize = True
-model_file = sys.argv[1]#"dataonly-twosides.2"
+model_file = sys.argv[1]
 #model_file = "dataonly-testaug.2"
 #model_file = "models/anneal-v2.5"
 inspect_mix, loss = load_model("%s"%(model_file),
                                instruments,wave_rest,n_latent=2)
+[model.eval() for model in inspect_mix]
+
 epoch = max(np.nonzero(loss[0][0])[0])+1
 print("loss:",loss.shape,"epoch:",epoch)
 print("Train SDSS :", loss[0][0][epoch-3:epoch])
@@ -824,11 +963,11 @@ print("Train BOSS :", loss[0][1][epoch-3:epoch])
 print("Valid SDSS :", loss[1][0][epoch-3:epoch])
 print("Valid BOSS :", loss[1][1][epoch-3:epoch])
 
-random_seed = 42
+random_seed = 0
 random.seed(random_seed)
 
 testset = collect_batches("chunk1024",which="test",NBATCH=25)
-view = collect_batches("joint",which=None)#,which="test")
+view = collect_batches("joint256",which=None)#,which="test")
 view[0] += testset[0]
 view[1] += testset[1]
 
@@ -850,58 +989,14 @@ specs = [spec_sdss,spec_boss]
 weights = [w_sdss, w_boss]
 redshifts = [z_sdss, z_boss]
 lognorms = [np.log10(norm_sdss), np.log10(norm_boss)]
+wh_joints = [wh_joint_sdss,wh_joint_boss]
+interesting = [34,244]#,480,511,542,1093]
 
 if "model" in sys.argv:
-    plot_detailedloss(loss)
-    # visualize 10 latent space
-    fig,axs = plt.subplots(1,3,figsize=(8,4),dpi=200,constrained_layout=True,
-                           gridspec_kw={'width_ratios': [1.5, 1, 1]})
-    
-    
-    losses = np.zeros((4,epoch))
-    losses[0] = loss[0][0][:epoch].sum(axis=1)
-    losses[1] = loss[1][0][:epoch].sum(axis=1)
-    losses[2] = loss[0][1][:epoch].sum(axis=1)
-    losses[3] = loss[1][1][:epoch].sum(axis=1)
-    
-    losses = 0.5*losses
-    
-    print("\n\n",model_file,"losses:",losses.shape)
-    plot_loss(losses,ax=axs[0],fs=10)
-    
-    np.random.seed(23)#42 
-    rand = np.random.randint(len(wh_joint_sdss), size=10)
-    #rand = np.arange(10)
-
-    for j in range(n_encoder):
-        ax=axs[j+1]
-
-        inds = np.array([wh_joint_sdss,wh_joint_boss][j])[rand]
-        zlist = redshifts[j][inds].detach().numpy()
-        rank = np.argsort(zlist)
-        inds = inds[rank]
-
-        s, _, _ = inspect_mix[j]._forward(specs[j][inds], weights[j][inds],
-                                          instruments[j],redshifts[j][inds])
-        s = s.detach().numpy()
-
-        batch_size,s_size = s.shape
-        locid = ["z=%.2f(%d)"%(n,ii) for ii,n in zip(rand[rank],redshifts[j][inds])] 
-
-        vmin,vmax=s.min(),s.max()
-        print("smin,smax:",vmin,vmax)
-        ax.matshow(s,vmax=vmax,vmin=vmin)#,cmap='winter')
-        for i in range(len(locid)):
-            ax.text(2,i+0.2,locid[i],c="k", weight='bold', fontsize=12,
-                    alpha=1)
-        ax.set_xlabel("latent variables");ax.set_ylabel(names[j])
-        ax.set_xticks([]);ax.set_yticks([])
-
-    #axs[0].set_ylim(0.5,1)
-    axs[0].set_title("($n_{latent}=%d$) best loss = %.2f"%(s_size,min(losses[1])))
+    data = [specs,weights,redshifts,instruments,wh_joints]
+    plot_model(data, inspect_mix, axs=[])
     plt.savefig("check_model.png",dpi=200)
-    
-    if "alone" in sys.argv:exit()
+if "alone" in sys.argv:exit()
     
 # background points
 np.random.seed(42)
@@ -915,32 +1010,39 @@ print("[Random sample] SDSS:",s_sdss.shape)#,"BOSS:",s_boss.shape)
 vmin,vmax=s_sdss.min().detach(),s_sdss.max().detach()
 s_size = s_sdss.shape[1]
 
-if norm_latent:
-    bg_med=[s_sdss.median(dim=0)[0],s_boss.median(dim=0)[0]]
-    s_sdss=s_sdss/bg_med[0]
-    s_boss=s_boss/bg_med[1]
+embed_color=[z_sdss[rand1],z_boss[rand2]]
+c_range = [0,0.5];cmap="gist_rainbow";cbar_label = "$z$"
 
-    
-if "sim" in sys.argv:
-    fig,ax = plt.subplots(figsize=(8,6))
-    s_sim,spec_sim,sim_loss =similarity_loss(\
-    spec_sdss[rand1],w_sdss[rand1],s_sdss,verbose=True)
-    img = ax.scatter(spec_sim.detach().cpu(),s_sim.detach().cpu(),
-                     c=sim_loss.detach(),cmap="plasma")
-    print("sim_loss:",sim_loss.sum())
-    s_sim,spec_sim,sim_loss = similarity_loss(\
-    spec_boss[rand2],w_boss[rand2],s_boss,verbose=True)
-    ax.scatter(spec_sim.detach().cpu(),s_sim.detach().cpu(),
-                     c=sim_loss.detach(),cmap="plasma")
-    print("sim_loss:",sim_loss.sum())
-    cbar = fig.colorbar(img, ax=ax)
-    cbar.set_label("loss")
-    ax.set_ylabel("latent chi^2")
-    ax.set_xlabel("spectral chi^2")
-    ax.set_xlim(0,30)
-    ax.set_ylim(0,5)
-    plt.savefig("similaity.png",dpi=120)
-    exit()
+s_mat= [s_sdss.detach().numpy().T,s_boss.detach().numpy().T]
+s=np.hstack((s_mat[0],s_mat[1]))
+print("\n\ns:",s.shape)
+xlim  = (s[0].min(),s[0].max())
+ylim  = (s[1].min(),0.8*s[1].max())
+
+fig = plt.figure(constrained_layout=True,figsize=(18,12),dpi=200)
+gs = fig.add_gridspec(2, 6, width_ratios=[3,1,1,1,1,1],hspace=0.1)
+
+ax11 = fig.add_subplot(gs[0, 0])
+ax12 = fig.add_subplot(gs[0, 1])
+ax13 = fig.add_subplot(gs[0, 2])
+ax1 = [ax11,ax12,ax13]
+
+ax2 = fig.add_subplot(gs[0, 3:])
+ax3 = fig.add_subplot(gs[1, :2])
+ax4 = fig.add_subplot(gs[1, 2:])
+
+plot_detailedloss(loss,ax=ax2)
+
+# plot similarity
+plot_similarity(inspect_mix, [specs,weights,redshifts,
+                              instruments,names],ax=ax3)
+
+data = [specs,weights,redshifts,instruments,wh_joints]
+plot_model(data, inspect_mix, axs=ax1)
+# plot joint samples
+plot_joint_samples(s_mat,inspect_mix, data,ax=ax4,xlim=xlim,ylim=ylim)
+plt.savefig("[2D]joint-targets.png",dpi=200)
+
 
 # define augmented samples 
 nparam = 3
@@ -951,14 +1053,12 @@ newz = np.linspace(0,0.5,nparam)
 #number = np.array([0,0])
 locid = ["z=%.1f"%(zz) for zz,n in zip(newz,number)]
 locid += ["raw data"]
-
-#print(newz)
-#newz+=0.21601364016532898#0.4863503873348236
 newz[newz<0]=0;newz[newz>0.5]=0.5
-#number = np.random.randint(100,300, size=len(newz))#[0,500,1000]#
 params = np.array([newz,number]).T
 
-interesting = [1,2]# 185,1,65
+
+name = ["target","augment"]
+colors = [['salmon','skyblue'],['salmon','skyblue'],['orange',"navy"],['gold','azure']]
 for wh_number in interesting:
     wh_sdss = [wh_joint_sdss[wh_number]]
     wh_boss = [wh_joint_boss[wh_number]]
@@ -973,7 +1073,6 @@ for wh_number in interesting:
     gs = fig.add_gridspec(4, 4, width_ratios=[1,1,0.5,0.5],hspace=0.01)
     ax1 = fig.add_subplot(gs[:2, 0])
     ax2 = fig.add_subplot(gs[:2, 1])
-
     ax3 = fig.add_subplot(gs[0, 2])
     ax4 = fig.add_subplot(gs[0, 3])
     ax10 = fig.add_subplot(gs[1, 2:])
@@ -1006,11 +1105,6 @@ for wh_number in interesting:
     embedded_batch = [embedded[:2],embedded[2:4],embedded[4:]]
 
     plot_latent(embed,true_z,[ax3,ax4],titles=titles,locid=locid)
-    colors = [['salmon','skyblue'],['salmon','skyblue'],['orange',"navy"],['gold','azure']]
-    name = ["target","#jitter+redshift"]
-
-    embed_color=[z_sdss[rand1],z_boss[rand2]]
-    c_range = [0,0.5];cmap="gist_rainbow";cbar_label = "$z$"
 
     mark_id = np.array(ids_sdss)[wh_sdss]
     comment = [{"ID":mark_id,"wh":1},
@@ -1018,13 +1112,6 @@ for wh_number in interesting:
     plot_embedding(embedded_batch,embed_color,name=name,comment=comment,
                    cbar_label=cbar_label, c_range=c_range,
                    markers=["o","^","s"],color=colors, ax=ax9, mute=True, cmap=cmap)
-    
-    s=np.vstack((s_sdss.detach().numpy(),s_boss.detach().numpy())).T
-    print("\n\ns:",s.shape)
-    
-    #xlim = (0,16);ylim = (-16,0)
-    xlim  = (s[0].min(),s[0].max())
-    ylim  = (s[1].min(),s[1].max())
     
     ax9.set_xlim(xlim);ax9.set_ylim(ylim)
 
@@ -1042,53 +1129,3 @@ for wh_number in interesting:
     ax.set_ylim(0,1.5)
     ax.legend(loc=4)
     plt.savefig("[%d]z=%.2f.png"%(wh_number,true_z[0]),dpi=200)
-
-
-if "skip" in sys.argv: exit()
-
-n_joint = 200
-rand = np.array(random.sample(range(len(wh_joint_sdss)), n_joint))
-s_track = []
-
-mark_ids = rand
-for j in range(n_encoder):
-    inds = np.array([wh_joint_sdss,wh_joint_boss][j])[rand]
-    s, _, _ = inspect_mix[j]._forward(specs[j][inds], weights[j][inds],
-                                      instruments[j],redshifts[j][inds])
-    
-    if norm_latent:s=s/bg_med[j]
-    s = s.detach().numpy().T
-    s_track.append(s)
-
-diff = np.sqrt(np.sum((s_track[0]-s_track[1])**2, axis=0))
-med_diff = np.median(diff)
-
-dist_rank = np.argsort(diff)[::-1]
-diff = diff[dist_rank]
-mask_names = mark_ids[dist_rank]
-
-text = "Rank   No.   Distance\n"
-for ii in range(10):
-    text += "%d         %d       %.2f\n"%(ii+1,mask_names[ii],diff[ii])
-text += "(median distance = %.3f)"%(med_diff)
-colors = [['gold','navy']]
-
-embedded_batch = [embedded[:2],s_track]
-comment = [{"ID":mark_ids,"wh":0, "pos":(-10,0),"fs":5}]
-#comment = []
-
-fig,ax = plt.subplots(figsize=(12,8),dpi=200)
-#zorder=[10,0];alpha=[1, 0.2] # show SDSS 
-#zorder=[0,10];alpha=[0.2, 1] # show BOSS 
-zorder=[0,0];alpha=[0.2, 0.2]
-
-plot_embedding(embedded_batch,embed_color,name=name,comment=comment,
-               cbar_label=cbar_label, c_range=c_range,cmap=cmap, zorder=zorder, alpha=alpha,
-               markers=["o","^","s"],color=colors, ax=ax,mute=True)
-ax.set_title("Random joint targets (N=%d)"%n_joint)
-
-#ax.text(6,2,text,fontsize=15)
-ax.text(xlim[0]+0.5*(xlim[1]-xlim[0]),ylim[0]+0.1*(ylim[1]-ylim[0]),text,fontsize=15)
-ax.set_xlim(xlim);ax.set_ylim(ylim)
-#plt.tight_layout()
-plt.savefig("[2D]%d-joint-targets.png"%(n_joint),dpi=200)

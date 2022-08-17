@@ -31,6 +31,20 @@ def build_ladder(train_sequence):
         n_start = n_end
     return ladder
 
+def load_model(path, instruments, wave_rest, n_latent=2, normalize=True):
+    device = wave_rest.device
+    mdict = torch.load(path, map_location=device)
+
+    models = []
+    for j in range(len(instruments)):
+        model = SpectrumAutoencoder(instruments[j],
+                                    wave_rest,
+                                    n_latent=n_latent,
+                                    normalize=normalize)
+        model.load_state_dict(mdict["model"][j])
+        models.append(model)
+    return models
+
 def get_all_parameters(models,instruments):
     model_params = []
     # multiple encoders
@@ -89,7 +103,7 @@ def similarity_loss(instrument, model, spec, w, z, s, slope=0.5, individual=Fals
 
     # only give large loss of (dis)similarities are different (either way)
     x = s_sim-spec_sim
-    sim_loss = torch.sigmoid(x)+torch.sigmoid(-slope*x-wid)
+    sim_loss = torch.sigmoid(slope*x-0.5*wid)+torch.sigmoid(-slope*x-0.5*wid)
     diag_mask = torch.diag(torch.ones(batch_size,device=device,dtype=bool))
     sim_loss[diag_mask] = 0
 
@@ -313,6 +327,7 @@ if __name__ == "__main__":
     parser.add_argument("-s", "--similarity", help="add similarity loss", action="store_true")
     parser.add_argument("-c", "--consistency", help="add consistency loss", action="store_true")
     parser.add_argument("-v", "--verbose", help="verbose printing", action="store_true")
+    parser.add_argument("-m", "--loadmodel", help="pre-trained model file", default=None)
     args = parser.parse_args()
 
     # define instruments
@@ -350,6 +365,7 @@ if __name__ == "__main__":
 
     annealing_step = 0.05
     ANNEAL_SCHEDULE = np.arange(0.2,1,annealing_step)
+    ANNEAL_SCHEDULE = np.hstack((np.zeros(16),ANNEAL_SCHEDULE))
     if args.verbose and args.similarity:
         print("similarity_slope:",len(ANNEAL_SCHEDULE),ANNEAL_SCHEDULE)
 
@@ -359,12 +375,16 @@ if __name__ == "__main__":
 
     # define and train the model
     n_hidden = (64, 256, 1024)
-    models = [ SpectrumAutoencoder(instrument,
-                                   wave_rest,
-                                   n_latent=args.latents,
-                                   n_hidden=n_hidden,
-                                   normalize=True)
-              for instrument in instruments ]
+    if args.loadmodel:
+        models = load_model(args.loadmodel,instruments,
+                            wave_rest,normalize=True)
+    else:
+        models = [ SpectrumAutoencoder(instrument,
+                                       wave_rest,
+                                       n_latent=args.latents,
+                                       n_hidden=n_hidden,
+                                       normalize=True)
+                  for instrument in instruments ]
     # use same decoder
     models[1].decoder = models[0].decoder
 
