@@ -60,14 +60,14 @@ class SDSS(Instrument):
             pickle.dump(batch, f)
 
     @classmethod
-    def save_in_batches(cls, dir, ids, batch_size=1024):
+    def save_in_batches(cls, dir, ids, tag=None, batch_size=1024):
         N = len(ids)
         idx = np.arange(0, N, batch_size)
         batches = np.array_split(ids, idx[1:])
         for counter, ids_ in zip(idx, batches):
             print (f"saving batch {counter} / {N}")
             batch = cls.make_batch(dir, ids_)
-            cls.save_batch(dir, batch, counter=counter)
+            cls.save_batch(dir, batch, tag=tag, counter=counter)
 
     @classmethod
     def get_spectrum(cls, dir, plate, mjd, fiberid, return_file=False):
@@ -199,7 +199,7 @@ class SDSS(Instrument):
         spec, w, z = batch[:3]
         batch_size, spec_size = spec.shape
         device = spec.device
-        wave_obs = cls._wave_obs
+        wave_obs = cls._wave_obs.to(device)
 
         if redshift:
             # uniform distribution of redshift offsets

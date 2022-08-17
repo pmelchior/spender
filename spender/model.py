@@ -255,12 +255,11 @@ class SpectrumAutoencoder(BaseAutoencoder):
                  instrument,
                  wave_rest,
                  n_latent=10,
+                 n_aux=1,
                  n_hidden=(64, 256, 1024),
                  normalize=False,
                 ):
 
-        # use redshift as auxiliary variable
-        n_aux = 1
         encoder = SpectrumEncoder(instrument, n_latent, n_aux=n_aux)
 
         decoder = SpectrumDecoder(
