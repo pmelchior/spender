@@ -1,6 +1,7 @@
 import torch, os
 import numpy as np
 from torch import nn
+from torchinterp1d import Interp1d
 
 class BaseInstrument(nn.Module):
     def __init__(self,
