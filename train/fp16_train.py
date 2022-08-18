@@ -150,8 +150,6 @@ def checkpoint(accelerator, args, optimizer, scheduler, n_encoder, outfile, loss
 
     accelerator.save({
         "model": unwrapped,
-        "optimizer": optimizer.optimizer.state_dict(), # optimizer is an AcceleratedOptimizer object
-        "scheduler": scheduler.state_dict(),
         "losses": losses,
     }, outfile)
     return
@@ -163,14 +161,14 @@ def load_model(filename, models, instruments):
     for i, model in enumerate(models):
         # backwards compat: add instrument to encoder
         try:
-            model.load_state_dict(model_struct['model'][i])
+            model.load_state_dict(model_struct['model'][i], strict=False)
         except RuntimeError:
             model_struct['model'][i]['encoder.instrument.wave_obs']= instruments[i].wave_obs
             model_struct['model'][i]['encoder.instrument.skyline_mask']= instruments[i].skyline_mask
-            model.load_state_dict(model_struct[i]['model'])
+            model.load_state_dict(model_struct[i]['model'], strict=False)
 
     losses = model_struct['losses']
-    return model, losses
+    return models, losses
 
 
 def train(models,
