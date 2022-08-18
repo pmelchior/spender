@@ -88,7 +88,9 @@ def similarity_loss(instrument, model, spec, w, z, s, slope=0.5, individual=Fals
 
     # only give large loss of (dis)similarities are different (either way)
     x = s_sim-spec_sim
-    sim_loss = torch.sigmoid(x)+torch.sigmoid(-slope*x-wid)
+    sim_loss = torch.sigmoid(slope*x-0.5*wid)+torch.sigmoid(-slope*x-0.5*wid)
+    diag_mask = torch.diag(torch.ones(batch_size,device=device,dtype=bool))
+    sim_loss[diag_mask] = 0
 
     if individual:
         return s_sim,spec_sim,sim_loss
