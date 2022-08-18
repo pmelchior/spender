@@ -115,6 +115,7 @@ if __name__ == "__main__":
     parser.add_argument("-l", "--batch_number", help="number of batches per epoch", type=int, default=None)
     parser.add_argument("-e", "--epochs", help="number of epochs", type=int, default=200)
     parser.add_argument("-r", "--rate", help="learning rate", type=float, default=1e-3)
+    parser.add_argument("-L", "--lsf_size", help="LSF kernel size", type=int, default=0)
     parser.add_argument("-C", "--clobber", help="continue training of existing model", action="store_true")
     parser.add_argument("-v", "--verbose", help="verbose printing", action="store_true")
     args = parser.parse_args()
@@ -128,6 +129,13 @@ if __name__ == "__main__":
     lmbda_max = instrument.wave_obs.max()
     bins = int(instrument.wave_obs.shape[0] * (1 + z_max))
     wave_rest = torch.linspace(lmbda_min, lmbda_max, bins, dtype=torch.float32)
+
+    # set LSF if requested
+    if args.lsf_size > 0:
+        lsf_kernel = torch.zeros(args.lsf_size)
+        lsf_kernel[args.lsf_size // 2] = 1
+        lsf_wave = instrument.wave_obs[:args.lsf_size]
+        instrument.set_lsf(lsf_kernel, lsf_wave, wave_rest)
 
     # data loaders
     trainloader = SDSS.get_data_loader(args.dir, which="train", batch_size=args.batch_size, shuffle=True)
