@@ -15,11 +15,11 @@ def load_model(filename, model, instrument):
     model_struct = torch.load(filename, map_location=device)
     # backwards compat: add instrument to encoder
     try:
-        model.load_state_dict(model_struct['model'])
+        model.load_state_dict(model_struct['model'], strict=False)
     except RuntimeError:
         model_struct['model']['encoder.instrument.wave_obs']= instrument.wave_obs
         model_struct['model']['encoder.instrument.skyline_mask']= instrument.skyline_mask
-        model.load_state_dict(model_struct['model'])
+        model.load_state_dict(model_struct['model'], strict=False)
     losses = model_struct['losses']
     return model, losses
 
