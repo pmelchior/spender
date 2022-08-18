@@ -99,8 +99,6 @@ def train(model, instrument, trainloader, validloader, n_epoch=200, n_batch=None
             unwrapped_model = accelerator.unwrap_model(model)
             accelerator.save({
                 "model": unwrapped_model.state_dict(),
-                "optimizer": optimizer.optimizer.state_dict(),
-                "scheduler": scheduler.state_dict(),
                 "losses": losses,
             }, outfile)
 

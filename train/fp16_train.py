@@ -150,8 +150,6 @@ def checkpoint(accelerator, args, optimizer, scheduler, n_encoder, outfile, loss
 
     accelerator.save({
         "model": unwrapped,
-        "optimizer": optimizer.optimizer.state_dict(), # optimizer is an AcceleratedOptimizer object
-        "scheduler": scheduler.state_dict(),
         "losses": losses,
     }, outfile)
     return
