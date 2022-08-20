@@ -93,6 +93,8 @@ def train(model, instrument, trainloader, validloader, n_epoch=200, n_batch=None
 
         if verbose:
             print(f'====> Epoch: {epoch_} TRAINING Loss: {train_loss:.3e}  VALIDATION Loss: {valid_loss:.3e}')
+            if instrument.lsf is not None:
+                print (f'LSF: {instrument.lsf.weight.data}')
 
         # checkpoints
         if epoch_ % 5 == 0 or epoch_ == n_epoch - 1:
