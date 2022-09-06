@@ -26,7 +26,9 @@ bins = 7000#int(data['wave'].shape[0] * (1 + data['z'].max()))
 wave_rest = torch.linspace(lmbda_min, lmbda_max, bins, dtype=torch.float32)
 print ("Restframe:\t{:.0f} .. {:.0f} A ({} bins)".format(lmbda_min, lmbda_max, bins))
 
-
+MY_COLORS = ['mediumseagreen',"skyblue",'salmon','orange',
+             'gold',"royalblue","yellow","deeppink","deepskyblue",
+             'orangered','aqua']
 
 def permute_indices(length,n_redundant=1):
     wrap_indices = torch.arange(length).repeat(n_redundant)
@@ -597,9 +599,8 @@ def spectra_multiplot(params, instruments, which, offset=3,
         dim = recon.shape[0]
         rand = [dim-1]*dim
 
-        s_sim,spec_sim,sim_loss = similarity_loss(\
-        instruments[j],inspect_mix[j],recon,recon_w,recon_z,embed[j],
-        individual=True)
+        s_sim,spec_sim,sim_loss = similarity_restframe(\
+        instruments[j],inspect_mix[j],embed[j],individual=True)
         print("s_chi:",s_sim[-1])
         print("spec_chi:",spec_sim[-1])
         print("similarity loss:",sim_loss[-1])
@@ -763,25 +764,67 @@ def similarity_loss(instrument, model, spec, w, z, s, slope=1.0, individual=Fals
     # needs to have amplitude of N terms to compare to fidelity loss
     return sim_loss.sum() / batch_size
 
-def plot_annealing_schedule(slope=[0,1], wid=5, cycle=10, xrange=(-30,10),
+def restframe_weight(model,instrument,mu=[5000,5000],
+                     sigma=[1000,1000],amp=[10,10]):
+    if type(instrument).__name__ == "SDSS": i=0
+    if type(instrument).__name__ == "BOSS": i=1
+    x = model.decoder.wave_rest
+    return amp[i]*torch.exp(-(0.5*(x-mu[i])/sigma[i])**2)
+
+def similarity_restframe(instrument, model, s, slope=0.5,
+                         individual=False, wid=5):
+    _, s_size = s.shape
+    device = s.device
+
+    spec = model.decode(s)
+    spec /= spec.median(dim=1)[0][:,None]
+    batch_size, spec_size = spec.shape
+    # pairwise dissimilarity of spectra
+    S = (spec[None,:,:] - spec[:,None,:])**2
+    # dissimilarity of spectra
+    # of order unity, larger for spectrum pairs with more comparable bins
+    W = restframe_weight(model,instrument)
+    print("\n\nW:",W.mean())
+    spec_sim = (W * S).sum(-1) / spec_size
+    # dissimilarity of latents
+    s_sim = ((s[None,:,:] - s[:,None,:])**2).sum(-1) / s_size
+
+    # only give large loss of (dis)similarities are different (either way)
+    x = s_sim-spec_sim
+    sim_loss = torch.sigmoid(slope*x-wid/2)+torch.sigmoid(-slope*x-wid/2)
+    diag_mask = torch.diag(torch.ones(batch_size,device=device,dtype=bool))
+    sim_loss[diag_mask] = 0
+
+    if individual:
+        return s_sim,spec_sim,sim_loss
+
+    # total loss: sum over N^2 terms,
+    # needs to have amplitude of N terms to compare to fidelity loss
+    return sim_loss.sum() / batch_size
+
+def plot_annealing_schedule(slope=[0,1], wid=5, cycle=10, xrange=(-50,20),
                             cmap="inferno",lw=2):
     k1 = np.arange(slope[0],slope[1], 1.0/cycle)
     x = torch.arange(xrange[0],xrange[1],0.01)
     get_cmap = matplotlib.cm.get_cmap(cmap)
-    fig,ax=plt.subplots(figsize=(5,5),dpi=200)
+    fig,ax=plt.subplots(figsize=(8,5),constrained_layout=True)
     for i in range(cycle):
         #loss = torch.sigmoid(x)+torch.sigmoid(-k1[i]*x-wid)
         loss = torch.sigmoid(k1[i]*x-wid/2)+torch.sigmoid(-k1[i]*x-wid/2)
-        ax.plot(x,loss,lw=lw,c=get_cmap(i/cycle),label="$k_1=%.2f$"%(k1[i]))
-    ax.legend(loc="best")
+        ax.plot(x,loss,lw=lw,c=get_cmap(i/cycle))
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(vmin=0, vmax=1))
+    cbar = fig.colorbar(sm)
+    cbar.set_label("$k_1$",fontsize=15)
     ax.set_xlabel("$(\Delta s)^2-(\Delta y)^2$")
     ax.set_ylabel("loss")
     plt.savefig("annealing.png",dpi=200)
     return
 
-def plot_detailedloss(loss, ax=None, fs=12):
-    print("loss:",loss.shape)
-    epoch = max(np.nonzero(loss[0][0])[0])+1
+def plot_detailedloss(loss, ax=None, fs=12):   
+    loss = np.array(loss[1])
+    mask = (loss[0].T[0]>0)
+    print("mask:",mask.shape)
+    epoch = mask.sum()
     ep = np.arange(epoch)
     print("epoch:",epoch)
     if not ax:fig,ax=plt.subplots(figsize=(8,6),dpi=200)
@@ -793,12 +836,12 @@ def plot_detailedloss(loss, ax=None, fs=12):
     alphas = [1,1,1,1,1]
     lws = [2,2,2,2,2]
     for j,nn in enumerate(name):
-        locloss = np.array(loss[1][j]).T
+        locloss = loss[j][mask].T
         print("locloss:", locloss.shape)
         for i,ll in enumerate(labels):
-            final_ep = locloss[i][epoch-1]
-            if sum(locloss[i][:epoch])==0:continue
-            ax.semilogy(ep,locloss[i][:epoch],style[i],
+            final_ep = locloss[i][-1]
+            if sum(locloss[i])==0:continue
+            ax.semilogy(ep,locloss[i],style[i],
                         label="%s %s(%.2f)"%
                         (ll,nn,final_ep),lw=lws[i],
                         alpha=alphas[i],color=colors[j][i])
@@ -826,13 +869,12 @@ def plot_similarity(model, data, fs=15, n_sim = 100, ax=None):
         s = model[j].encode(specs[j][rand],
                             aux=redshifts[j][rand].unsqueeze(1))
 
-        detail = similarity_loss(instruments[j],model[j],
-                                 specs[j][rand],weights[j][rand],
-                                 redshifts[j][rand],s,individual=True)
+        detail = similarity_restframe(instruments[j],model[j],s,
+                                      individual=True)
 
         s_sim,spec_sim,sim_loss = [i.detach().cpu() for i in detail]
-        print("\ns_sim = %.2f +/- %.2f"%(s_sim.mean(),s_sim.std()))
-        print("spec_sim = %.2f +/- %.2f\n"%(spec_sim.mean(),spec_sim.std()))
+        print("\ns_sim = %.2f +/- %.2f"%(s_sim.median(),s_sim.std()))
+        print("spec_sim = %.2f +/- %.2f\n"%(spec_sim.median(),spec_sim.std()))
         label_j = "%s(%.1e,%.1e)"%(names[j],s_mat[j][0].std(),s_mat[j][1].std())
         img = ax.scatter(spec_sim,s_sim,c=sim_loss, vmin=0, vmax=1,
                          cmap=cmap,edgecolors=colors[j],
@@ -896,12 +938,17 @@ def plot_model(data, model, axs=[],fs=15):
         fig,axs = plt.subplots(1,3,figsize=(8,4),dpi=200,
                                constrained_layout=True,
                                gridspec_kw={'width_ratios': [1.5, 1, 1]})
-    losses = np.zeros((4,epoch))
-    losses[0] = loss[0][0][:epoch].sum(axis=1)
-    losses[1] = loss[1][0][:epoch].sum(axis=1)
-    losses[2] = loss[0][1][:epoch].sum(axis=1)
-    losses[3] = loss[1][1][:epoch].sum(axis=1)
+    col = loss[0][0].sum(axis=0)>0
+    losses = np.zeros((4,loss.shape[2]))
+    losses[0] = 2*loss[0][0].T[col].mean(axis=0)
+    losses[1] = 2*loss[1][0].T[col].mean(axis=0)
+    losses[2] = 2*loss[0][1].T[col].mean(axis=0)
+    losses[3] = 2*loss[1][1].T[col].mean(axis=0)
+
     print("\n\n",model_file,"losses:",losses.shape)
+    
+    non_zero = losses[0]>0
+    losses = losses[:,non_zero]
     plot_loss(losses,ax=axs[0],fs=fs)
     
     np.random.seed(23)#42 
@@ -930,6 +977,27 @@ def plot_model(data, model, axs=[],fs=15):
     axs[0].set_title("(%s) best loss = %.2f"%(model_file,min(losses[1])),fontsize=fs)
     return
 
+def compare_spectra(model,instrument,s):
+    xx = model.decoder.wave_rest
+    #spec_loc = model.decode(s).detach().numpy()
+    #spec_loc /= np.median(spec_loc,axis=1)[:,None]
+    rand = np.random.randint(len(ids_boss), size=10)
+    spec_loc, wloc = resample_to_restframe(wave_boss,\
+                     xx,spec_boss[rand],w_boss[rand],z_boss[rand])
+    spec_loc = spec_loc.detach().numpy()
+
+    wfunc = restframe_weight(model,instrument,amp=[1,1])
+    plt.figure(figsize=(10,8))
+    for i,yy in enumerate(spec_loc):
+        plt.plot(xx,yy,c=MY_COLORS[i],label="spectrum %d"%i)
+    plt.plot(xx,wfunc,"k--",lw=5,label="weight function")
+    plt.legend()
+    plt.xlabel("wave_rest $(\AA)$")
+    plt.ylim(0,3)
+    plt.savefig("compare_spectra.png",dpi=200)
+    #count_rate(inspect_mix[0],s_sdss)
+    exit()
+    return
 #-------------------------------------------------------
 import matplotlib
 plot_annealing_schedule()
@@ -940,7 +1008,6 @@ ins_sdss,ins_boss = instruments
 n_encoder = len(instruments)
 
 option_normalize = True
-w_encode = False
 
 model_file = sys.argv[1]
 inspect_mix, loss = load_model("%s"%(model_file),
@@ -981,7 +1048,7 @@ weights = [w_sdss, w_boss]
 redshifts = [z_sdss, z_boss]
 lognorms = [np.log10(norm_sdss), np.log10(norm_boss)]
 wh_joints = [wh_joint_sdss,wh_joint_boss]
-interesting = [34,244,480,511,542,1093]
+interesting = [511,595]#,244,480,511,542,1093]
 
 if "model" in sys.argv:
     data = [specs,weights,redshifts,instruments,wh_joints]
@@ -997,6 +1064,9 @@ rand2 = np.random.randint(len(ids_boss), size=N)
 
 s_sdss = inspect_mix[0].encode(spec_sdss[rand1], aux=z_sdss[rand1].unsqueeze(1))
 s_boss = inspect_mix[1].encode(spec_boss[rand2], aux=z_boss[rand2].unsqueeze(1))
+
+if "count" in sys.argv:
+    compare_spectra(inspect_mix[1],instruments[1],s_boss[:10])
 
 print("[Random sample] SDSS:",s_sdss.shape)#,"BOSS:",s_boss.shape)
 vmin,vmax=s_sdss.min().detach(),s_sdss.max().detach()

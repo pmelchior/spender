@@ -14,7 +14,7 @@ from spender.data.sdss import SDSS, BOSS
 from spender.util import mem_report, resample_to_restframe
 
 
-def prepare_train(seq,niter=700):
+def prepare_train(seq,niter=1000):
     for d in seq:
         if not "iteration" in d:d["iteration"]=niter
         if not "encoder" in d:d.update({"encoder":d["data"]})
@@ -102,6 +102,46 @@ def similarity_loss(instrument, model, spec, w, z, s, slope=0.5, individual=Fals
     # needs to have amplitude of N terms to compare to fidelity loss
     return amp*sim_loss.sum() / batch_size
 
+def restframe_weight(model,instrument,mu=[5000,5000],
+                     sigma=[1000,1000],amp=[10,10]):
+    if type(instrument).__name__ == "SDSS": i=0
+    if type(instrument).__name__ == "BOSS": i=1
+    x = model.decoder.wave_rest
+    return amp[i]*torch.exp(-(0.5*(x-mu[i])/sigma[i])**2)
+
+def similarity_restframe(instrument, model, s=None, slope=1.0,
+                         individual=False, wid=5, batch_size=200):
+    if s==None: 
+        s_lim = 8
+        s = s_lim*torch.rand(batch_size,2,device = instrument.wave_obs.device)
+    _, s_size = s.shape
+    device = s.device
+
+    spec = model.decode(s)
+    spec /= spec.median(dim=1)[0][:,None]
+    batch_size, spec_size = spec.shape
+    # pairwise dissimilarity of spectra
+    S = (spec[None,:,:] - spec[:,None,:])**2
+    # dissimilarity of spectra
+    # of order unity, larger for spectrum pairs with more comparable bins
+    W = restframe_weight(model,instrument)
+    spec_sim = (W * S).sum(-1) / spec_size
+    # dissimilarity of latents
+    s_sim = ((s[None,:,:] - s[:,None,:])**2).sum(-1) / s_size
+
+    # only give large loss of (dis)similarities are different (either way)
+    x = s_sim-spec_sim
+    sim_loss = torch.sigmoid(slope*x-wid/2)+torch.sigmoid(-slope*x-wid/2)
+    diag_mask = torch.diag(torch.ones(batch_size,device=device,dtype=bool))
+    sim_loss[diag_mask] = 0
+
+    if individual:
+        return s_sim,spec_sim,sim_loss
+
+    # total loss: sum over N^2 terms,
+    # needs to have amplitude of N terms to compare to fidelity loss
+    return sim_loss.sum() / batch_size
+
 def _losses(model,
             instrument,
             batch,
@@ -119,7 +159,7 @@ def _losses(model,
     loss = model.loss(spec, w, instrument, z=z, s=s)
 
     if similarity:
-        sim_loss = similarity_loss(instrument, model, spec, w, z, s, slope=slope)
+        sim_loss = similarity_restframe(instrument, model, s, slope=slope)
     else: sim_loss = 0
 
     return loss, sim_loss, s
@@ -358,7 +398,8 @@ if __name__ == "__main__":
     # restframe wavelength for reconstructed spectra
     # Note: represents joint dataset wavelength range
     lmbda_min = 2359
-    lmbda_max = 10402
+    if n_encoder==1:lmbda_max = 9000
+    else: lmbda_max = 10402
     bins = 7000
     wave_rest = torch.linspace(lmbda_min, lmbda_max, bins, dtype=torch.float32)
     if args.verbose:
