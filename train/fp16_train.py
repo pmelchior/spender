@@ -7,13 +7,14 @@ import torch
 from torch import nn
 from torch import optim
 from accelerate import Accelerator
-
+# allows one to run fp16_train.py from home directory
+import sys;sys.path.insert(1, './')
 from spender import SpectrumAutoencoder
 from spender.data.sdss import SDSS, BOSS
 from spender.util import mem_report, resample_to_restframe
 
 
-def prepare_train(seq,niter=500):
+def prepare_train(seq,niter=700):
     for d in seq:
         if not "iteration" in d:d["iteration"]=niter
         if not "encoder" in d:d.update({"encoder":d["data"]})
@@ -62,7 +63,7 @@ def consistency_loss(s, s_aug, individual=False):
         return x, sim_loss
     return sim_loss.sum()
 
-def similarity_loss(instrument, model, spec, w, z, s, slope=0.5, individual=False, wid=5):
+def similarity_loss(instrument, model, spec, w, z, s, slope=0.5, individual=False, wid=5, amp=3):
     spec,w = resample_to_restframe(instrument.wave_obs,
                                    model.decoder.wave_rest,
                                    spec,w,z)
@@ -75,20 +76,63 @@ def similarity_loss(instrument, model, spec, w, z, s, slope=0.5, individual=Fals
     S = (spec[None,:,:] - spec[:,None,:])**2
 
     # pairwise weights
-    non_zero = w > 0
+    non_zero = w > 1e-6
+    N = (non_zero[None,:,:] * non_zero[:,None,:])
     W = (1 / w)[None,:,:] + (1 / w)[:,None,:]
-    W = (non_zero[None,:,:] * non_zero[:,None,:]) / W
+    W =  N / W
 
+    N = N.sum(-1)
+    N[N==0] = 1 
     # dissimilarity of spectra
     # of order unity, larger for spectrum pairs with more comparable bins
-    spec_sim = (W * S).sum(-1) / spec_size
+    spec_sim = (W * S).sum(-1) / N
 
     # dissimilarity of latents
     s_sim = ((s[None,:,:] - s[:,None,:])**2).sum(-1) / s_size
 
     # only give large loss of (dis)similarities are different (either way)
     x = s_sim-spec_sim
-    sim_loss = torch.sigmoid(x)+torch.sigmoid(-slope*x-wid)
+    sim_loss = torch.sigmoid(slope*x-0.5*wid)+torch.sigmoid(-slope*x-0.5*wid)
+    diag_mask = torch.diag(torch.ones(batch_size,device=device,dtype=bool))
+    sim_loss[diag_mask] = 0
+
+    if individual:
+        return s_sim,spec_sim,sim_loss
+    # total loss: sum over N^2 terms,
+    # needs to have amplitude of N terms to compare to fidelity loss
+    return amp*sim_loss.sum() / batch_size
+
+def restframe_weight(model,instrument,mu=[5000,5000],
+                     sigma=[1000,1000],amp=[20,20]):
+    if type(instrument).__name__ == "SDSS": i=0
+    if type(instrument).__name__ == "BOSS": i=1
+    x = model.decoder.wave_rest
+    return amp[i]*torch.exp(-(0.5*(x-mu[i])/sigma[i])**2)
+
+def similarity_restframe(instrument, model, s=None, slope=1.0,
+                         individual=False, wid=5, bound=[4000,7000]):
+    _, s_size = s.shape
+    device = s.device
+
+    spec = model.decode(s)
+    wave = model.decoder.wave_rest
+    mask = (wave>bound[0])*(wave<bound[1])
+    spec /= spec[:,mask].median(dim=1)[0][:,None]
+    batch_size, spec_size = spec.shape
+    # pairwise dissimilarity of spectra
+    S = (spec[None,:,:] - spec[:,None,:])**2
+    # dissimilarity of spectra
+    # of order unity, larger for spectrum pairs with more comparable bins
+    W = restframe_weight(model,instrument)
+    spec_sim = (W * S).sum(-1) / spec_size
+    # dissimilarity of latents
+    s_sim = ((s[None,:,:] - s[:,None,:])**2).sum(-1) / s_size
+
+    # only give large loss of (dis)similarities are different (either way)
+    x = s_sim-spec_sim
+    sim_loss = torch.sigmoid(slope*x-wid/2)+torch.sigmoid(-slope*x-wid/2)
+    diag_mask = torch.diag(torch.ones(batch_size,device=device,dtype=bool))
+    sim_loss[diag_mask] = 0
 
     if individual:
         return s_sim,spec_sim,sim_loss
@@ -110,11 +154,11 @@ def _losses(model,
         w[:, instrument.skyline_mask] = 0
 
     # need the latents later on if similarity=True
-    s = model.encode(spec, w=w, aux=z.unsqueeze(1))
+    s = model.encode(spec, aux=z.unsqueeze(1))
     loss = model.loss(spec, w, instrument, z=z, s=s)
 
     if similarity:
-        sim_loss = similarity_loss(instrument, model, spec, w, z, s, slope=slope)
+        sim_loss = similarity_restframe(instrument, model, s, slope=slope)
     else: sim_loss = 0
 
     return loss, sim_loss, s
@@ -213,7 +257,7 @@ def train(models,
         detailed_loss = np.zeros((2, n_encoder, n_epoch, n_loss))
     else:
         try:
-            epoch = len(losses)
+            epoch = len(losses[0][0])
             n_epoch += epoch
             detailed_loss = np.zeros((2, n_encoder, n_epoch, n_loss))
             detailed_loss[:, :, :epoch, :] = losses
@@ -238,6 +282,8 @@ def train(models,
             p.requires_grad = mode['decoder']
 
         slope = ANNEAL_SCHEDULE[(epoch_ - epoch)%len(ANNEAL_SCHEDULE)]
+        if n_epoch-epoch_<=10: slope=0 # turn off similarity
+        
         if verbose and similarity:
             print("similarity info:",slope)
 
@@ -345,13 +391,14 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # define instruments
-    instruments = [ SDSS(), BOSS() ]
+    instruments = [ SDSS() ]#, BOSS() ]
     n_encoder = len(instruments)
 
     # restframe wavelength for reconstructed spectra
     # Note: represents joint dataset wavelength range
     lmbda_min = 2359
-    lmbda_max = 10402
+    if n_encoder==1:lmbda_max = 9332
+    else: lmbda_max = 10402
     bins = 7000
     wave_rest = torch.linspace(lmbda_min, lmbda_max, bins, dtype=torch.float32)
     if args.verbose:
@@ -365,7 +412,7 @@ if __name__ == "__main__":
     if args.augmentation:
         aug_fcts = [ SDSS.augment_spectra, BOSS.augment_spectra ]
     else:
-        aug_fcts = None
+        aug_fcts = [ None,None ]
 
     # define training sequence
     SED = {"data":[True,False], "decoder":True}
@@ -378,13 +425,11 @@ if __name__ == "__main__":
     train_sequence = prepare_train([FULL])
 
     annealing_step = 0.05
-    ANNEAL_SCHEDULE = np.arange(0.2,1,annealing_step)
+    ANNEAL_SCHEDULE = np.arange(0,1,annealing_step)
+    ANNEAL_SCHEDULE = np.hstack((np.zeros(20),ANNEAL_SCHEDULE))
+    
     if args.verbose and args.similarity:
         print("similarity_slope:",len(ANNEAL_SCHEDULE),ANNEAL_SCHEDULE)
-
-    uniform_njit = [100,300]
-    mock_params = [[0.4,uniform_njit]]#,[0.1,uniform_njit]]
-    ncopy = len(mock_params)
 
     # define and train the model
     n_hidden = (64, 256, 1024)
@@ -395,7 +440,7 @@ if __name__ == "__main__":
                                    normalize=True)
               for instrument in instruments ]
     # use same decoder
-    models[1].decoder = models[0].decoder
+    if n_encoder==2:models[1].decoder = models[0].decoder
 
     n_epoch = sum([item['iteration'] for item in train_sequence])
     init_t = time.time()
