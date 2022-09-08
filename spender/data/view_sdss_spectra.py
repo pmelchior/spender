@@ -338,61 +338,6 @@ def merge_batch(file_batches):
           "z:",z.shape)
     return spectra, weights, z, specid, norm
 
-def _normalize(x, m, w=None):
-    # apply constant factor c that minimizes (c*m - x)^2
-    if w is None:
-        w = 1
-    mw = m*w
-    c = (mw * x).sum(dim=-1) / (mw * m).sum(dim=-1)
-    return m * c.unsqueeze(-1), c
-
-def augment_spectra(batch, instrument, redshift=True, noise=False, mask=False, z_new=None, ratio=0.05):
-    spec, w, z = batch
-    batch_size, spec_size = spec.shape
-    device = spec.device
-    wave_obs = instrument.wave_obs
-
-    if redshift:
-        # uniform distribution of redshift offsets
-        z_lim = 0.8 * torch.max(z)
-        z_offset = z_lim*(torch.rand(batch_size, device=device)-0.5)
-        # keep redshifts between 0 and 0.5
-        if not z_new:z_new = z + z_offset
-        z_new = torch.minimum(torch.nn.functional.relu(z_new), 0.5 * torch.ones(batch_size, device=device))
-        zfactor = ((1 + z_new)/(1 + z))
-        
-        wave_redshifted = (wave_obs.unsqueeze(1) * zfactor).T
-
-        # redshift linear interpolation
-        spec_new = Interp1d()(wave_redshifted, spec, wave_obs)
-        # ensure extrapolated values have zero weights
-        w_new = torch.clone(w)
-        w_new[:,0] = 0
-        w_new[:,-1] = 0
-        w_new = Interp1d()(wave_redshifted, w_new, wave_obs)
-        w_new = torch.nn.functional.relu(w_new)
-    else:
-        spec_new, w_new, z_new = torch.clone(spec), torch.clone(w), z
-
-    # add noise
-    if noise:
-        sigma = 0.2 * torch.quantile(spec, 0.95, keepdim=True)[0]
-        print("sigma:",sigma.shape)
-        noise = sigma * torch.distributions.Normal(0, 1).sample(spec.shape).to(device)
-        noise_mask = torch.distributions.Uniform(0, 1).sample(spec.shape).to(device)>ratio
-        noise[noise_mask]=0
-        spec_new += noise
-        # add variance in quadrature, avoid division by 0
-        w_new = 1/(1/(w_new + 1e-6) + noise**2)
-        print("w_new:",w_new.shape)
-    if mask:
-        length = spec_size // 20
-        start = torch.randint(0, spec_size-length, (1,)).item()
-        spec_new[:, start:start+length] = 0
-        w_new[:, start:start+length] = 0
-
-    return spec_new, w_new, z_new
-
 def spectra_multiplot(params, instruments, which, offset=3,
                 locid=[], prim_xlim=[],plot=True,axs_list=None):
     colors = ['mediumseagreen',"skyblue",'salmon','orange','gold']
@@ -435,19 +380,13 @@ def spectra_multiplot(params, instruments, which, offset=3,
         recon_z = torch.zeros(n_test+1)
 
         for i,param in enumerate(params):
-            z_new,n_jit = param
             wrest = inspect_mix[j].decoder.wave_rest
             wave_data = waves[j]/(1+true_z[j])
-            
-            zfactor = (1+z_new)/(1+true_z[j])
             locwave = waves[j][None,:]
-            
-            tensor_znew = torch.tensor([z_new]).float()
+
             batch = (ydata[j],weights[j],true_z[j])
-            recon_ij,fake_w,tensor_znew=augment_spectra(batch,instruments[j],
-                                                        z_new=tensor_znew)
+            recon_ij,fake_w,tensor_znew=instruments[j].augment_spectra(batch,noise=False)
             z_new = tensor_znew.item()
-            
             print("z=%.2f weight mean:%.2f weight std:%.2f"%(z_new,fake_w.mean(),fake_w.std()))
             print("recon_ij: %.2f +/= %.2f"%(recon_ij.mean(),
                   recon_ij.std()))
@@ -482,8 +421,7 @@ def spectra_multiplot(params, instruments, which, offset=3,
             y_err[y_err>0.5*offset]=0.5*offset
             y1 = yloc-y_err;y2 = yloc+y_err
 
-            if locid ==[]: label = "N=%d, z=%.2f (loss=%.2f)"%(n_jit,z_new,loss)
-            else: label = "%s (loss=%.2f)"%(locid[i],loss)
+            label = "z=%.2f (loss=%.2f)"%(z_new,loss)
             ylabel = "augmented: %.2f +/= %.2f"%(recon_ij.mean(),recon_ij.std())
             
             ax.fill_between(disp_wave,y1,y2,step='mid',
@@ -534,17 +472,12 @@ def spectra_multiplot(params, instruments, which, offset=3,
         print("flat_ydata[j]: %.2f +/- %.2f"%(flat_ydata[j].mean(),     flat_ydata[j].std()))
         wh_ext = torch.argmax(flat_ydata[j])
         print("extrema:", wh_ext,"wave:",wave_data[wh_ext])
-        
-        #print("flat_ydata:",flat_ydata[j].min(),flat_ydata[j].max())
 
         ax.fill_between(wave_data,flat_ydata[j]-y_err,flat_ydata[j]+y_err,color="k",step='mid',alpha=0.2,zorder=-10)
         ax.plot(wave_data,flat_ydata[j],"k-",drawstyle='steps-mid',
                 label=ylabel)
         ax.plot(wrest,y_rest,drawstyle='steps-mid', c='r',
                 label="true loss: %.2f"%loss,lw=0.5)
-        
-        
-        
         ax.set_xlim(prim_xlim)
         ax.set_ylim(-1.5*offset,(n_test+1)*offset)
         #ax.legend(title=title,loc='best')
