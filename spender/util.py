@@ -26,10 +26,11 @@ def load_batch(batch_name, subset=None):
 # based on https://medium.com/speechmatics/how-to-build-a-streaming-dataloader-with-pytorch-a66dd891d9dd
 class BatchedFilesDataset(IterableDataset):
 
-    def __init__(self, file_list, load_fct, shuffle=False):
+    def __init__(self, file_list, load_fct, shuffle=False, shuffle_instance=False):
         assert len(file_list), "File list cannot be empty"
         self.file_list = file_list
         self.shuffle = shuffle
+        self.shuffle_instance = shuffle_instance
         self.load_fct = load_fct
 
     def process_data(self, idx):
@@ -37,7 +38,10 @@ class BatchedFilesDataset(IterableDataset):
             idx = random.randint(0, len(self.file_list) -1)
         batch_name = self.file_list[idx]
         data = self.load_fct(batch_name)
-        for x in zip(*data):
+        data = list(zip(*data))
+        if self.shuffle_instance:
+            random.shuffle(data)
+        for x in data:
             yield x
 
     def get_stream(self):

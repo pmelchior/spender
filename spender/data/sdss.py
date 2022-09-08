@@ -18,14 +18,14 @@ class SDSS(Instrument):
         super().__init__(SDSS._wave_obs, lsf=lsf, calibration=calibration)
 
     @classmethod
-    def get_data_loader(cls, dir, which=None, tag=None, batch_size=1024, shuffle=False):
+    def get_data_loader(cls, dir, which=None, tag=None, batch_size=1024, shuffle=False, shuffle_instance=False):
         files = cls.list_batches(dir, which=which, tag=tag)
         if which in ["train", "valid"]:
             subset = slice(0,3)
         else:
             subset = None
         load_fct = partial(load_batch, subset=subset)
-        data = BatchedFilesDataset(files, load_fct, shuffle=shuffle)
+        data = BatchedFilesDataset(files, load_fct, shuffle=shuffle, shuffle_instance=shuffle_instance)
         return DataLoader(data, batch_size=batch_size)
 
     @classmethod
