@@ -14,7 +14,7 @@ from spender.data.sdss import SDSS, BOSS
 from spender.util import mem_report, resample_to_restframe
 
 
-def prepare_train(seq,niter=1000):
+def prepare_train(seq,niter=700):
     for d in seq:
         if not "iteration" in d:d["iteration"]=niter
         if not "encoder" in d:d.update({"encoder":d["data"]})
@@ -103,22 +103,21 @@ def similarity_loss(instrument, model, spec, w, z, s, slope=0.5, individual=Fals
     return amp*sim_loss.sum() / batch_size
 
 def restframe_weight(model,instrument,mu=[5000,5000],
-                     sigma=[1000,1000],amp=[10,10]):
+                     sigma=[1000,1000],amp=[20,20]):
     if type(instrument).__name__ == "SDSS": i=0
     if type(instrument).__name__ == "BOSS": i=1
     x = model.decoder.wave_rest
     return amp[i]*torch.exp(-(0.5*(x-mu[i])/sigma[i])**2)
 
 def similarity_restframe(instrument, model, s=None, slope=1.0,
-                         individual=False, wid=5, batch_size=200):
-    if s==None: 
-        s_lim = 8
-        s = s_lim*torch.rand(batch_size,2,device = instrument.wave_obs.device)
+                         individual=False, wid=5, bound=[4000,7000]):
     _, s_size = s.shape
     device = s.device
 
     spec = model.decode(s)
-    spec /= spec.median(dim=1)[0][:,None]
+    wave = model.decoder.wave_rest
+    mask = (wave>bound[0])*(wave<bound[1])
+    spec /= spec[:,mask].median(dim=1)[0][:,None]
     batch_size, spec_size = spec.shape
     # pairwise dissimilarity of spectra
     S = (spec[None,:,:] - spec[:,None,:])**2
@@ -392,13 +391,13 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # define instruments
-    instruments = [ SDSS(), BOSS() ]
+    instruments = [ SDSS() ]#, BOSS() ]
     n_encoder = len(instruments)
 
     # restframe wavelength for reconstructed spectra
     # Note: represents joint dataset wavelength range
     lmbda_min = 2359
-    if n_encoder==1:lmbda_max = 9000
+    if n_encoder==1:lmbda_max = 9332
     else: lmbda_max = 10402
     bins = 7000
     wave_rest = torch.linspace(lmbda_min, lmbda_max, bins, dtype=torch.float32)
