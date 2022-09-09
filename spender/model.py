@@ -138,10 +138,11 @@ class SpectrumDecoder(MLP):
         else:
             wave_obs = instrument.wave_obs
 
-            # convolve with LSF
-            if instrument.lsf is not None:
-                spectrum_restframe = instrument.lsf(spectrum_restframe.unsqueeze(1)).squeeze(1)
         spectrum = Interp1d()(wave_redshifted, spectrum_restframe, wave_obs)
+
+        # convolve with LSF
+        if instrument.lsf is not None:
+            spectrum = instrument.lsf(spectrum.unsqueeze(1)).squeeze(1)
 
         # apply calibration function to observed spectrum
         if instrument is not None and instrument.calibration is not None:

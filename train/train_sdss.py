@@ -45,6 +45,8 @@ def train(model, instrument, trainloader, validloader, n_epoch=200, n_batch=None
             if verbose:
                 train_loss, valid_loss = losses[-1]
                 print(f'====> Epoch: {epoch-1} TRAINING Loss: {train_loss:.3e}  VALIDATION Loss: {valid_loss:.3e}')
+                if instrument.lsf is not None:
+                    print (f'LSF: {instrument.lsf.weight.data}')
         except: # OK if losses are empty
             pass
 
@@ -93,6 +95,8 @@ def train(model, instrument, trainloader, validloader, n_epoch=200, n_batch=None
 
         if verbose:
             print(f'====> Epoch: {epoch_} TRAINING Loss: {train_loss:.3e}  VALIDATION Loss: {valid_loss:.3e}')
+            if instrument.lsf is not None:
+                print (f'LSF: {instrument.lsf.weight.data}')
 
         # checkpoints
         if epoch_ % 5 == 0 or epoch_ == n_epoch - 1:
@@ -113,12 +117,24 @@ if __name__ == "__main__":
     parser.add_argument("-l", "--batch_number", help="number of batches per epoch", type=int, default=None)
     parser.add_argument("-e", "--epochs", help="number of epochs", type=int, default=200)
     parser.add_argument("-r", "--rate", help="learning rate", type=float, default=1e-3)
+    parser.add_argument("-L", "--lsf_size", help="LSF kernel size", type=int, default=0)
     parser.add_argument("-C", "--clobber", help="continue training of existing model", action="store_true")
     parser.add_argument("-v", "--verbose", help="verbose printing", action="store_true")
     args = parser.parse_args()
 
+    # set LSF if requested
+    if args.lsf_size > 0:
+        lsf = torch.zeros(args.lsf_size)
+        lsf[args.lsf_size // 2] = 1
+    else:
+        lsf = None
+
     # define SDSS instrument
-    instrument = SDSS()
+    instrument = SDSS(lsf=lsf)
+
+    # fit the LSF
+    if args.lsf_size > 0:
+        instrument.lsf.weight.requires_grad = True
 
     # restframe wavelength for reconstructed spectra
     z_max = 0.2
