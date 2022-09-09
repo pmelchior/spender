@@ -1,23 +1,21 @@
 #!/usr/bin/env python
 # coding: utf-8
-import io, os, sys,time,random
+import io, os, sys, time, random
+sys.path.insert(1, './')
 import numpy as np
 import pickle
 import torch
 from torchinterp1d import Interp1d
-from util import skylines_mask,permute_indices
-from emission_lines import *
-from batch_wrapper import wrap_batches, save_batch
-from model import SpectrumAutoencoder
-from instrument import get_instrument,Instrument
-#from memory_profiler import profile
+from spender import SpectrumAutoencoder
+from spender.data.sdss import SDSS, BOSS
+from spender.util import mem_report, resample_to_restframe
+from spender.data.emission_lines import emissionlines
 import humanize,psutil,GPUtil
 import matplotlib.pyplot as plt
 
 data_dir = "/scratch/gpfs/yanliang"
 dynamic_dir = "/scratch/gpfs/yanliang/dynamic-data"
 savemodel = "models"
-#device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 device =  torch.device("cpu")
 
 # restframe wavelength for reconstructed spectra
@@ -27,6 +25,16 @@ lmbda_max = 10402#data['wave'].max()
 bins = 7000#int(data['wave'].shape[0] * (1 + data['z'].max()))
 wave_rest = torch.linspace(lmbda_min, lmbda_max, bins, dtype=torch.float32)
 print ("Restframe:\t{:.0f} .. {:.0f} A ({} bins)".format(lmbda_min, lmbda_max, bins))
+
+MY_COLORS = ['mediumseagreen',"skyblue",'salmon','orange',
+             'gold',"royalblue","yellow","deeppink","deepskyblue",
+             'orangered','aqua']
+
+def permute_indices(length,n_redundant=1):
+    wrap_indices = torch.arange(length).repeat(n_redundant)
+    rand_permut = wrap_indices[torch.randperm(length*n_redundant)]
+    return rand_permut
+
 
 def merge(merge_dir,name=''):
     
@@ -56,39 +64,19 @@ def merge(merge_dir,name=''):
              save_all=True, append_images=im_list[1:])
     return
 
+def load_model(path, instruments, wave_rest,n_latent=2, normalize=True):
+    device = wave_rest.device
+    mdict = torch.load(path, map_location=device)
 
-def load_model(fileroot,n_latent=10):
-    if not torch.cuda.is_available():
-        device = torch.device('cpu')
-    else:
-        device = None
-    
-    path = f'{fileroot}.pt'
-    print("path:",path)
-    model = torch.load(path, map_location=device)
-    if type(model)==list or type(model)==tuple:
-        [m.eval() for m in model]
-    elif type(model)==dict:
-        mdict = model
-        print("states:",mdict.keys())
-
-        models = mdict["model"]
-        instruments = mdict["instrument"]
-        model = []
-        if "n_latent" in mdict:n_latent=mdict["n_latent"]
-        for m in models:
-            loadm = SpectrumAutoencoder(wave_rest,n_latent=n_latent,
-                                        normalize=option_normalize)
-            loadm.load_state_dict(m)
-            loadm.eval()
-            model.append(loadm)
-
-    else: model.eval()
-
-    loss =  mdict["losses"]
-    _, n_encoder, n_epoch, n_loss = loss.shape
-    print (f"model {fileroot}: iterations {n_epoch}")
-    return model, loss
+    models = []
+    for j in range(len(instruments)):
+        model = SpectrumAutoencoder(instruments[j],
+                                    wave_rest,
+                                    n_latent=n_latent,
+                                    normalize=normalize)
+        model.load_state_dict(mdict["model"][j])
+        models.append(model)
+    return models,mdict["losses"]
 
 def sdss_name(plate, mjd, fiberid):
     flocal = os.path.join(dat_dir, 'sdss-spectra/spec-%s-%i-%s.fits' % (str(plate).zfill(4), mjd, str(fiberid).zfill(4)))
@@ -156,7 +144,6 @@ def sdss2boss(sdss_list):
     return np.array(boss_list)
         
 def plot_loss(loss, ax=None,xlim=None,ylim=None,fs=15):
-    print("loss:",loss)
     latest = loss[:2,-1]
     ep = range(len(loss[0]))
     
@@ -351,30 +338,8 @@ def merge_batch(file_batches):
           "z:",z.shape)
     return spectra, weights, z, specid, norm
 
-def _normalize(x, m, w=None):
-    # apply constant factor c that minimizes (c*m - x)^2
-    if w is None:
-        w = 1
-    mw = m*w
-    c = (mw * x).sum(dim=-1) / (mw * m).sum(dim=-1)
-    return m * c.unsqueeze(-1), c
-    
-def model_forward(model,x, w=None, instrument=None, z=None, s=None):
-    # normalized!
-    if s is None:
-        s = model.encode(x, w=w, z=z)
-    spectrum_restframe = model.decode(s)
-    spectrum_observed = model.decoder.transform(spectrum_restframe, instrument=instrument, z=z)
-    if model.normalize:
-        spectrum_observed,coeff = _normalize(x, spectrum_observed, w=w)
-        print("coeff: %.2f"%coeff.item())
-        spectrum_restframe*=coeff.unsqueeze(-1)
-    return s, spectrum_restframe, spectrum_observed
-
-def fake_jitter(params, instruments, which, offset=3,
-                w_factor = [], flat_weight=[], locid=[],
-                fix_z=False, prim_xlim=[],
-                model_free=[],plot=True,axs_list=None):
+def spectra_multiplot(params, instruments, which, offset=3,
+                locid=[], prim_xlim=[],plot=True,axs_list=None):
     colors = ['mediumseagreen',"skyblue",'salmon','orange','gold']
     code = ["SDSS","BOSS"]
     
@@ -397,10 +362,6 @@ def fake_jitter(params, instruments, which, offset=3,
     n_test = len(params)
     print(n_test)
     
-    if w_factor ==[]: w_factor = np.ones(n_test)
-    if model_free ==[]: model_free = [True]*n_test
-    if flat_weight ==[]: flat_weight = [False]*n_test
-    
     ndata = len(ydata)
     embed = torch.zeros((ndata,n_test+1,s_size))
     flat_ydata = []
@@ -419,61 +380,21 @@ def fake_jitter(params, instruments, which, offset=3,
         recon_z = torch.zeros(n_test+1)
 
         for i,param in enumerate(params):
-            z_new,n_jit = param
             wrest = inspect_mix[j].decoder.wave_rest
             wave_data = waves[j]/(1+true_z[j])
-            
-            zfactor = (1+z_new)/(1+true_z[j])
             locwave = waves[j][None,:]
-            
-            # define recon_ij
-            if model_free[i]:
-                # no artifitial redshift
-                if fix_z:
-                    recon_ij = torch.clone(ydata[j])
-                    fake_w = torch.clone(weights[j])
-                # apply artifitial redshift
-                else:
-                    # redshift linear interpolation
-                    recon_ij = Interp1d()(locwave*zfactor,ydata[j],locwave)
-            # model based spectra
-            else:
-                clean_model = inspect_mix[j].forward(ydata[j], weights[j], instruments[j],torch.tensor([z_new]).float())
-                recon_ij = torch.clone(clean_model)
-            
-            # define fake_w
-            if flat_weight[i]:
-                
-                fake_w =  weights[j].mean()*torch.ones_like(recon_ij)
-                fake_w[weights[j]<2e-6] = 1e-6
-            else: fake_w = Interp1d()(locwave*zfactor,weights[j],locwave)
-            
-            if locid != []:
-                if locid[i]=="nothing + true w":
-                    recon_ij = torch.ones_like(recon_ij)
-                if "permute w" in locid[i]:
-                    print("permuting weights! size =", fake_w.shape[1])
-                    reorder = permute_indices(fake_w.shape[1])
-                    fake_w[0] = fake_w[0][reorder]
-                    fake_w[weights[j]<2e-6] = 1e-6
 
-                    
-            loc,amp = insert_jitters(recon_ij[0],n_jit)
-            recon_ij[0][loc] += amp
-            fake_w[0][loc] = 1/(amp**2+1/fake_w[0][loc])
-            
-            
-            fake_w*=w_factor[i]
+            batch = (ydata[j],weights[j],true_z[j])
+            recon_ij,fake_w,tensor_znew=instruments[j].augment_spectra(batch,noise=False)
+            z_new = tensor_znew.item()
             print("z=%.2f weight mean:%.2f weight std:%.2f"%(z_new,fake_w.mean(),fake_w.std()))
             print("recon_ij: %.2f +/= %.2f"%(recon_ij.mean(),
                   recon_ij.std()))
+            
             # model arguments
             args = (recon_ij.float(), fake_w.float(), instruments[j],
-                    torch.tensor([z_new]).float())
-            
-            if inspect_mix[j].normalize:
-                latent,y_rest,_ = model_forward(inspect_mix[j],*args)
-            else:latent,y_rest,_ = inspect_mix[j]._forward(*args)
+                    tensor_znew)
+            latent,y_rest,_ = inspect_mix[j]._forward(*args)
             
             embed[j][i] = latent[0]
             recon[i] = recon_ij[0]
@@ -500,8 +421,7 @@ def fake_jitter(params, instruments, which, offset=3,
             y_err[y_err>0.5*offset]=0.5*offset
             y1 = yloc-y_err;y2 = yloc+y_err
 
-            if locid ==[]: label = "N=%d, z=%.2f (loss=%.2f)"%(n_jit,z_new,loss)
-            else: label = "%s (loss=%.2f)"%(locid[i],loss)
+            label = "z=%.2f (loss=%.2f)"%(z_new,loss)
             ylabel = "augmented: %.2f +/= %.2f"%(recon_ij.mean(),recon_ij.std())
             
             ax.fill_between(disp_wave,y1,y2,step='mid',
@@ -523,11 +443,8 @@ def fake_jitter(params, instruments, which, offset=3,
         args = (y_clone, wj, instruments[j], true_z[j])
         print("forward data... true w mean: %.2f, std: %.2f"%(wj.mean(),wj.std()))
         
-        if inspect_mix[j].normalize:
-                latent,y_rest,_ = model_forward(inspect_mix[j],*args)
-        else:latent,y_rest,_ = inspect_mix[j]._forward(*args)
+        latent,y_rest,_ = inspect_mix[j]._forward(*args)
         loss = inspect_mix[j].loss(*args)
-        
         y_rest = y_rest[0].detach()
         
         embed[j][-1] = latent[0]
@@ -555,17 +472,12 @@ def fake_jitter(params, instruments, which, offset=3,
         print("flat_ydata[j]: %.2f +/- %.2f"%(flat_ydata[j].mean(),     flat_ydata[j].std()))
         wh_ext = torch.argmax(flat_ydata[j])
         print("extrema:", wh_ext,"wave:",wave_data[wh_ext])
-        
-        #print("flat_ydata:",flat_ydata[j].min(),flat_ydata[j].max())
 
         ax.fill_between(wave_data,flat_ydata[j]-y_err,flat_ydata[j]+y_err,color="k",step='mid',alpha=0.2,zorder=-10)
         ax.plot(wave_data,flat_ydata[j],"k-",drawstyle='steps-mid',
                 label=ylabel)
         ax.plot(wrest,y_rest,drawstyle='steps-mid', c='r',
                 label="true loss: %.2f"%loss,lw=0.5)
-        
-        
-        
         ax.set_xlim(prim_xlim)
         ax.set_ylim(-1.5*offset,(n_test+1)*offset)
         #ax.legend(title=title,loc='best')
@@ -615,21 +527,18 @@ def fake_jitter(params, instruments, which, offset=3,
         
         axs[2].legend(loc=4)
         #if plot:plt.tight_layout()
-    
         print("recon shape:",recon.shape)
         # evaluate similarity loss
         dim = recon.shape[0]
         rand = [dim-1]*dim
-        
-        recon,recon_w = resample_to_restframe(waves[j],wrest,
-                                              recon,recon_w,recon_z)
-        s_sim,spec_sim,sim_loss = similarity_loss(recon,recon_w,embed[j],
-                                                  verbose=True,rand=rand)
-        print("s_chi:",s_sim)
-        print("spec_chi:",spec_sim)
-        print("similarity loss:",sim_loss)
+
+        s_sim,spec_sim,sim_loss = similarity_restframe(\
+        instruments[j],inspect_mix[j],embed[j],individual=True)
+        print("s_chi:",s_sim[-1])
+        print("spec_chi:",spec_sim[-1])
+        print("similarity loss:",sim_loss[-1])
     
-    
+
     cross_loss = []
     # evaluate SDSS vs BOSS loss
     # interpolate to SDSS
@@ -691,7 +600,8 @@ def plot_embedding(embedded,color_code,name,cmap=None, c_range=[0,0.5], zorder=[
     ax.scatter(embedding_boss[0],embedding_boss[1],s=ms,vmin=c_range[0],vmax=c_range[1], 
                edgecolors='b',c=color_code[1],alpha=alpha[1],cmap=cmap,label=labels[1],zorder=zorder[1])
 
-    cbar = plt.colorbar(img)
+    cbar = plt.colorbar(img,ax=ax,location="right",fraction=0.05,
+                        shrink=0.8,pad=0.01)
     cbar.set_label(cbar_label)
     
     
@@ -722,7 +632,7 @@ def plot_embedding(embedded,color_code,name,cmap=None, c_range=[0,0.5], zorder=[
                 print("sdss vs. boss")
                 print(args["ID"][ii],batch[j][0][ii],batch[j][1][ii])
             
-    ax.legend(loc=4)
+    ax.legend(loc='best')
     return
 
 
@@ -747,64 +657,319 @@ def resample_to_restframe(wave_obs,wave_rest,y,w,z):
     exit()
     return yrest,wrest
 
-# translates spectra similarity to latent space similarity
-def similarity_loss(spec,w,s,verbose=False,rand=[],wid=5,slope=0.5):
-    batch_size, s_size = s.shape
-    if rand==[]:rand = permute_indices(batch_size)
-    new_w = 1/(w**(-1)+w[rand]**(-1))
-    D = (new_w > 1e-6).sum(dim=1)
-    spec_sim = torch.sum(new_w*(spec[rand]-spec)**2,dim=1)/D
-    s_sim = torch.sum((s[rand]-s)**2,dim=1)/s_size
-    x = s_sim-spec_sim
-    #x = torch.sqrt(s_sim)-torch.sqrt(spec_sim)
-    sim_loss = torch.sigmoid(x)+torch.sigmoid(-slope*x-wid)
-    if verbose:return s_sim,spec_sim,sim_loss
-    else: return sim_loss.sum()
+def similarity_loss(instrument, model, spec, w, z, s, slope=1.0, individual=False, wid=5):
+    spec,w = resample_to_restframe(instrument.wave_obs,
+                                   model.decoder.wave_rest,
+                                   spec,w,z)
 
-def prepare_data(view,wave,mask_skyline = True):
-    intensity_limit = 2;radii = 5
-    data = merge_batch(view)
-    if mask_skyline:
-        locmask = skylines_mask(wave)
-        maskmat = locmask.repeat(data[1].shape[0],1)
-        data[1][maskmat]=1e-6
-    return data
+    batch_size, spec_size = spec.shape
+    _, s_size = s.shape
+    device = s.device
+
+    # pairwise dissimilarity of spectra
+    S = (spec[None,:,:] - spec[:,None,:])**2
+
+    # pairwise weights
+    non_zero = w > 0
+    N = (non_zero[None,:,:] * non_zero[:,None,:])
+    W = (1 / w)[None,:,:] + (1 / w)[:,None,:]
+    W =  N / W
+
+    N = N.sum(-1)
+    N[N==0] = 1 
+    # dissimilarity of spectra
+    # of order unity, larger for spectrum pairs with more comparable bins
+    spec_sim = (W * S).sum(-1) / N
+
+    # dissimilarity of latents
+    s_sim = ((s[None,:,:] - s[:,None,:])**2).sum(-1) / s_size
+
+    # only give large loss of (dis)similarities are different (either way)
+    x = s_sim-spec_sim
+    sim_loss = torch.sigmoid(slope*x-wid/2)+torch.sigmoid(-slope*x-wid/2)
+    diag_mask = torch.diag(torch.ones(batch_size,device=device,dtype=bool))
+    sim_loss[diag_mask] = 0
+
+    if individual:
+        return s_sim,spec_sim,sim_loss
+
+    # total loss: sum over N^2 terms,
+    # needs to have amplitude of N terms to compare to fidelity loss
+    return sim_loss.sum() / batch_size
+
+def restframe_weight(model,instrument,mu=[5000,5000],
+                     sigma=[1000,1000],amp=[10,10]):
+    if type(instrument).__name__ == "SDSS": i=0
+    if type(instrument).__name__ == "BOSS": i=1
+    x = model.decoder.wave_rest
+    return amp[i]*torch.exp(-(0.5*(x-mu[i])/sigma[i])**2)
+
+def similarity_restframe(instrument, model, s, slope=0.5,
+                         individual=False, wid=5):
+    _, s_size = s.shape
+    device = s.device
+
+    spec = model.decode(s)
+    spec /= spec.median(dim=1)[0][:,None]
+    batch_size, spec_size = spec.shape
+    # pairwise dissimilarity of spectra
+    S = (spec[None,:,:] - spec[:,None,:])**2
+    # dissimilarity of spectra
+    # of order unity, larger for spectrum pairs with more comparable bins
+    W = restframe_weight(model,instrument)
+    print("\n\nW:",W.mean())
+    spec_sim = (W * S).sum(-1) / spec_size
+    # dissimilarity of latents
+    s_sim = ((s[None,:,:] - s[:,None,:])**2).sum(-1) / s_size
+
+    # only give large loss of (dis)similarities are different (either way)
+    x = s_sim-spec_sim
+    sim_loss = torch.sigmoid(slope*x-wid/2)+torch.sigmoid(-slope*x-wid/2)
+    diag_mask = torch.diag(torch.ones(batch_size,device=device,dtype=bool))
+    sim_loss[diag_mask] = 0
+
+    if individual:
+        return s_sim,spec_sim,sim_loss
+
+    # total loss: sum over N^2 terms,
+    # needs to have amplitude of N terms to compare to fidelity loss
+    return sim_loss.sum() / batch_size
+
+def plot_annealing_schedule(slope=[0,1], wid=5, cycle=10, xrange=(-50,20),
+                            cmap="inferno",lw=2):
+    k1 = np.arange(slope[0],slope[1], 1.0/cycle)
+    x = torch.arange(xrange[0],xrange[1],0.01)
+    get_cmap = matplotlib.cm.get_cmap(cmap)
+    fig,ax=plt.subplots(figsize=(8,5),constrained_layout=True)
+    for i in range(cycle):
+        #loss = torch.sigmoid(x)+torch.sigmoid(-k1[i]*x-wid)
+        loss = torch.sigmoid(k1[i]*x-wid/2)+torch.sigmoid(-k1[i]*x-wid/2)
+        ax.plot(x,loss,lw=lw,c=get_cmap(i/cycle))
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(vmin=0, vmax=1))
+    cbar = fig.colorbar(sm)
+    cbar.set_label("$k_1$",fontsize=15)
+    ax.set_xlabel("$(\Delta s)^2-(\Delta y)^2$")
+    ax.set_ylabel("loss")
+    plt.savefig("annealing.png",dpi=200)
+    return
+
+def plot_detailedloss(loss, ax=None, fs=12):   
+    loss = np.array(loss[1])
+    mask = (loss[0].T[0]>0)
+    print("mask:",mask.shape)
+    epoch = mask.sum()
+    ep = np.arange(epoch)
+    print("epoch:",epoch)
+    if not ax:fig,ax=plt.subplots(figsize=(8,6),dpi=200)
+    name = ["S","B"]
+    labels = ["fidelity","similarity",
+              "aug_fidelity","aug_similarity","consistency"]
+    colors = [['k','r','k','r',"c"],["b","orange","b","orange","pink"]]
+    style = ["-","-","--","--","-"]
+    alphas = [1,1,1,1,1]
+    lws = [2,2,2,2,2]
+    for j,nn in enumerate(name):
+        locloss = loss[j][mask].T
+        print("locloss:", locloss.shape)
+        for i,ll in enumerate(labels):
+            final_ep = locloss[i][-1]
+            if sum(locloss[i])==0:continue
+            ax.semilogy(ep,locloss[i],style[i],
+                        label="%s %s(%.2f)"%
+                        (ll,nn,final_ep),lw=lws[i],
+                        alpha=alphas[i],color=colors[j][i])
+        
+    #ax.axhline(0.5,ls="--",color="b",label="loss = 0.5")
+    ax.set_xlabel("epoch",fontsize=fs)
+    #ax.set_ylabel("loss",fontsize=fs)
+    ax.legend(loc="best",fontsize=fs,ncol=2)
+    ax.set_title("Validation Losses",fontsize=fs)
+    #plt.savefig("detailed_loss.png",dpi=200)
+    return
+
+def plot_similarity(model, data, fs=15, n_sim = 100, ax=None):
+    specs,weights,redshifts,instruments,names = data
+    rands = [np.random.randint(len(redshifts[0]), size=n_sim),
+             np.random.randint(len(redshifts[1]), size=n_sim)]
+    
+    losses = []; colors = ["salmon","skyblue"];cmap = "rainbow"
+    if not ax:
+        fig,ax = plt.subplots(figsize=(8,5),constrained_layout=True)
+    
+    for j in range(len(instruments)):
+        rand = rands[j]
+
+        s = model[j].encode(specs[j][rand],
+                            aux=redshifts[j][rand].unsqueeze(1))
+
+        detail = similarity_restframe(instruments[j],model[j],s,
+                                      individual=True)
+
+        s_sim,spec_sim,sim_loss = [i.detach().cpu() for i in detail]
+        print("\ns_sim = %.2f +/- %.2f"%(s_sim.median(),s_sim.std()))
+        print("spec_sim = %.2f +/- %.2f\n"%(spec_sim.median(),spec_sim.std()))
+        label_j = "%s(%.1e,%.1e)"%(names[j],s_mat[j][0].std(),s_mat[j][1].std())
+        img = ax.scatter(spec_sim,s_sim,c=sim_loss, vmin=0, vmax=1,
+                         cmap=cmap,edgecolors=colors[j],
+                         label=label_j)
+        losses.append(sim_loss.mean())
+
+    comment = "similarity loss: %.3f, %.3f"%(losses[0],losses[1])
+    cbar = plt.colorbar(img,ax=ax,location="right",fraction=0.05,
+                        shrink=0.8, pad=0.01)
+    cbar.set_label("similarity loss",fontsize=fs)
+    ax.set_title(comment,fontsize=fs)
+    ax.legend(loc="best",fontsize=fs)
+    ax.set_ylabel("latent $\chi^2$",fontsize=fs)
+    ax.set_xlabel("spectral $\chi^2$",fontsize=fs)
+    return
+
+def plot_joint_samples(s_mat, model, data, zorder=[0,0], alpha=[0.2, 0.2],
+                       n_joint = 200, ax=None, xlim=None,ylim=None):
+    specs,weights,redshifts,instruments,wh_joints = data
+    rand = np.array(random.sample(range(len(wh_joints[0])), n_joint))
+    s_track = []
+    mark_ids = rand
+    for j in range(n_encoder):
+        inds = np.array(wh_joints[j])[rand]
+        s = model[j].encode(specs[j][inds],
+                            aux=redshifts[j][inds].unsqueeze(1))
+
+        s = s.detach().numpy().T
+        s_track.append(s)
+    diff = np.sqrt(np.sum((s_track[0]-s_track[1])**2, axis=0))
+    med_diff = np.median(diff)
+
+    dist_rank = np.argsort(diff)[::-1]
+    diff = diff[dist_rank]
+    mask_names = mark_ids[dist_rank]
+
+    text = "Rank   No.   Distance\n"
+    for ii in range(5):
+        text += "%d         %d       %.2f\n"%(ii+1,mask_names[ii],diff[ii])
+    text += "(median distance = %.3f)"%(med_diff)
+    colors = [['gold','navy']]
+    
+    embedded_batch = [s_mat,s_track]
+    comment = [{"ID":mark_ids,"wh":0, "pos":(-10,0),"fs":5}]
+    if not ax:fig,ax = plt.subplots(figsize=(12,8),dpi=200)
+    plot_embedding(embedded_batch,embed_color,name= ["target","augment"],
+                   comment=comment,
+                   cbar_label=cbar_label, c_range=c_range,cmap=cmap, 
+                   zorder=zorder, alpha=alpha,
+                   markers=["o","^","s"],color=colors, ax=ax,mute=True)
+    ax.set_title("Random joint targets (N=%d)"%n_joint)
+    
+    ax.text(xlim[0]+0.5*(xlim[1]-xlim[0]),ylim[0]+0.7*(ylim[1]-ylim[0]),text,fontsize=15)
+    ax.set_xlim(xlim);ax.set_ylim(ylim)
+    return
+
+def plot_model(data, model, axs=[],fs=15):
+    specs,weights,redshifts,instruments,wh_joints=data
+    # visualize 10 latent space
+    if axs==[]:
+        fig,axs = plt.subplots(1,3,figsize=(8,4),dpi=200,
+                               constrained_layout=True,
+                               gridspec_kw={'width_ratios': [1.5, 1, 1]})
+    col = loss[0][0].sum(axis=0)>0
+    losses = np.zeros((4,loss.shape[2]))
+    losses[0] = 2*loss[0][0].T[col].mean(axis=0)
+    losses[1] = 2*loss[1][0].T[col].mean(axis=0)
+    losses[2] = 2*loss[0][1].T[col].mean(axis=0)
+    losses[3] = 2*loss[1][1].T[col].mean(axis=0)
+
+    print("\n\n",model_file,"losses:",losses.shape)
+    
+    non_zero = losses[0]>0
+    losses = losses[:,non_zero]
+    plot_loss(losses,ax=axs[0],fs=fs)
+    
+    np.random.seed(23)#42 
+    rand = np.random.randint(len(wh_joints[0]), size=10)
+    for j in range(n_encoder):
+        ax=axs[j+1]
+        inds = np.array(wh_joints[j])[rand]
+        zlist = redshifts[j][inds].detach().numpy()
+        rank = np.argsort(zlist)
+        inds = inds[rank]
+        s = model[j].encode(specs[j][inds],
+                            aux=redshifts[j][inds].unsqueeze(1))
+        s = s.detach().numpy()
+        batch_size,s_size = s.shape
+        locid = ["z=%.2f(%d)"%(n,ii) for ii,n in zip(rand[rank],redshifts[j][inds])] 
+
+        vmin,vmax=s.min(),s.max()
+        print("smin,smax:",vmin,vmax)
+        ax.matshow(s,vmax=vmax,vmin=vmin)#,cmap='winter')
+        ax.set_xticks([]);ax.set_yticks([])
+        ax.set_xlabel("latent variables");ax.set_ylabel(names[j])
+        if j>0: continue
+        for i in range(len(locid)):
+            ax.text(2,i+0.2,locid[i],c="k", weight='bold', 
+                    fontsize=12,alpha=1)
+    axs[0].set_title("(%s) best loss = %.2f"%(model_file,min(losses[1])),fontsize=fs)
+    return
+
+def compare_spectra(model,instrument,s):
+    xx = model.decoder.wave_rest
+    #spec_loc = model.decode(s).detach().numpy()
+    #spec_loc /= np.median(spec_loc,axis=1)[:,None]
+    rand = np.random.randint(len(ids_boss), size=10)
+    spec_loc, wloc = resample_to_restframe(wave_boss,\
+                     xx,spec_boss[rand],w_boss[rand],z_boss[rand])
+    spec_loc = spec_loc.detach().numpy()
+
+    wfunc = restframe_weight(model,instrument,amp=[1,1])
+    plt.figure(figsize=(10,8))
+    for i,yy in enumerate(spec_loc):
+        plt.plot(xx,yy,c=MY_COLORS[i],label="spectrum %d"%i)
+    plt.plot(xx,wfunc,"k--",lw=5,label="weight function")
+    plt.legend()
+    plt.xlabel("wave_rest $(\AA)$")
+    plt.ylim(0,3)
+    plt.savefig("compare_spectra.png",dpi=200)
+    #count_rate(inspect_mix[0],s_sdss)
+    exit()
+    return
 #-------------------------------------------------------
-from instrument import get_instrument
+import matplotlib
+plot_annealing_schedule()
 
 instrument_names = ["SDSS", "BOSS"]
-instruments = [ get_instrument(name) for name in instrument_names ]
+instruments = [ SDSS(), BOSS() ]
 ins_sdss,ins_boss = instruments
-n_encoder = len(instrument_names)
+n_encoder = len(instruments)
 
 option_normalize = True
-model_file = "dataonly-debug.2"
-#model_file = "models/anneal-v2.5"
-inspect_mix, loss = load_model("%s"%(model_file),n_latent=2)
+
+model_file = sys.argv[1]
+inspect_mix, loss = load_model("%s"%(model_file),
+                               instruments,wave_rest,n_latent=2)
+[model.eval() for model in inspect_mix]
+
 epoch = max(np.nonzero(loss[0][0])[0])+1
 print("loss:",loss.shape,"epoch:",epoch)
-print("Train BOSS :", loss[0][1][:3])
-print("Valid BOSS :", loss[1][1][:3])
+print("Train SDSS :", loss[0][0][epoch-3:epoch])
+print("Train BOSS :", loss[0][1][epoch-3:epoch])
+print("Valid SDSS :", loss[1][0][epoch-3:epoch])
+print("Valid BOSS :", loss[1][1][epoch-3:epoch])
 
-random_seed = 42
+random_seed = 0
 random.seed(random_seed)
 
-testset = collect_batches("all",which="test",NBATCH=25)
-view = collect_batches("joint",which=None)#,which="test")
+testset = collect_batches("chunk1024",which="test",NBATCH=25)
+view = collect_batches("joint256",which=None)#,which="test")
 view[0] += testset[0]
 view[1] += testset[1]
 
 wave_sdss = instruments[0].wave_obs
 wave_boss = instruments[1].wave_obs
 
-#batch_copy = load_batch("SDSSchunk1024_199680_copy.pkl")
-#spec_sdss,w_sdss,z_sdss = [item.to(device) for item in #batch_copy["batch"][:3]]
-spec_sdss,w_sdss,z_sdss,ids_sdss,norm_sdss = \
-prepare_data(view[0],wave_sdss)
-spec_boss,w_boss,z_boss,ids_boss,norm_boss = \
-prepare_data(view[1],wave_boss)
+spec_sdss,w_sdss,z_sdss,ids_sdss,norm_sdss = merge_batch(view[0])
+spec_boss,w_boss,z_boss,ids_boss,norm_boss = merge_batch(view[1])
+w_sdss[:, instruments[0].skyline_mask] = 0
+w_boss[:, instruments[1].skyline_mask] = 0
 
-    
 SDSS_id, BOSS_id =  boss_sdss_id()
 joint_ids = find_intersection(ids_sdss,ids_boss)
 wh_joint_sdss = [ids_sdss.index(i) for i in joint_ids]
@@ -815,56 +980,14 @@ specs = [spec_sdss,spec_boss]
 weights = [w_sdss, w_boss]
 redshifts = [z_sdss, z_boss]
 lognorms = [np.log10(norm_sdss), np.log10(norm_boss)]
-#interesting = [14019,4207,4839,121,6776]
-
+wh_joints = [wh_joint_sdss,wh_joint_boss]
+interesting = [511,595]#,244,480,511,542,1093]
 
 if "model" in sys.argv:
-    # visualize 10 latent space
-    fig,axs = plt.subplots(1,3,figsize=(8,4),dpi=200,constrained_layout=True,
-                           gridspec_kw={'width_ratios': [1.5, 1, 1]})
-    
-    losses = np.zeros((4,epoch))
-    losses[0] = loss[0][0][:epoch].sum(axis=1)
-    losses[1] = loss[1][0][:epoch].sum(axis=1)
-    losses[2] = loss[0][1][:epoch].sum(axis=1)
-    losses[3] = loss[1][1][:epoch].sum(axis=1)
-    
-    print("\n\n",model_file,"losses:",losses.shape)
-    plot_loss(losses,ax=axs[0],fs=10)
-    
-    np.random.seed(23)#42 
-    rand = np.random.randint(len(wh_joint_sdss), size=10)
-    #rand = np.arange(10)
-
-    for j in range(n_encoder):
-        ax=axs[j+1]
-
-        inds = np.array([wh_joint_sdss,wh_joint_boss][j])[rand]
-        zlist = redshifts[j][inds].detach().numpy()
-        rank = np.argsort(zlist)
-        inds = inds[rank]
-
-        s, _, _ = inspect_mix[j]._forward(specs[j][inds], weights[j][inds],
-                                          instruments[j],redshifts[j][inds])
-        s = s.detach().numpy()
-
-        batch_size,s_size = s.shape
-        locid = ["z=%.2f(%d)"%(n,ii) for ii,n in zip(rand[rank],redshifts[j][inds])] 
-
-        vmin,vmax=s.min(),s.max()
-        print("smin,smax:",vmin,vmax)
-        ax.matshow(s,vmax=vmax,vmin=vmin)#,cmap='winter')
-        for i in range(len(locid)):
-            ax.text(2,i+0.2,locid[i],c="k", weight='bold', fontsize=12,
-                    alpha=1)
-        ax.set_xlabel("latent variables");ax.set_ylabel(names[j])
-        ax.set_xticks([]);ax.set_yticks([])
-
-    #axs[0].set_ylim(0.5,1)
-    axs[0].set_title("($n_{latent}=%d$) best loss = %.2f"%(s_size,min(losses[1])))
+    data = [specs,weights,redshifts,instruments,wh_joints]
+    plot_model(data, inspect_mix, axs=[])
     plt.savefig("check_model.png",dpi=200)
-    
-    if "alone" in sys.argv:exit()
+if "alone" in sys.argv:exit()
     
 # background points
 np.random.seed(42)
@@ -872,50 +995,65 @@ N = 2000
 rand1 = np.random.randint(len(ids_sdss), size=N)
 rand2 = np.random.randint(len(ids_boss), size=N)
 
-s_sdss, _, _ = inspect_mix[0]._forward(spec_sdss[rand1], w_sdss[rand1], ins_sdss,z_sdss[rand1])
-s_boss, _, _ = inspect_mix[1]._forward(spec_boss[rand2], w_boss[rand2], ins_boss,z_boss[rand2])
+s_sdss = inspect_mix[0].encode(spec_sdss[rand1], aux=z_sdss[rand1].unsqueeze(1))
+s_boss = inspect_mix[1].encode(spec_boss[rand2], aux=z_boss[rand2].unsqueeze(1))
+
+if "count" in sys.argv:
+    compare_spectra(inspect_mix[1],instruments[1],s_boss[:10])
+
 print("[Random sample] SDSS:",s_sdss.shape)#,"BOSS:",s_boss.shape)
-vmin,vmax=s_sdss.min(),s_sdss.max()
+vmin,vmax=s_sdss.min().detach(),s_sdss.max().detach()
 s_size = s_sdss.shape[1]
 
-if "sim" in sys.argv:
-    fig,ax = plt.subplots(figsize=(8,6))
-    s_sim,spec_sim,sim_loss =similarity_loss(\
-    spec_sdss[rand1],w_sdss[rand1],s_sdss,verbose=True)
-    img = ax.scatter(spec_sim.detach().cpu(),s_sim.detach().cpu(),
-                     c=sim_loss.detach(),cmap="plasma")
-    print("sim_loss:",sim_loss.sum())
-    s_sim,spec_sim,sim_loss = similarity_loss(\
-    spec_boss[rand2],w_boss[rand2],s_boss,verbose=True)
-    ax.scatter(spec_sim.detach().cpu(),s_sim.detach().cpu(),
-                     c=sim_loss.detach(),cmap="plasma")
-    print("sim_loss:",sim_loss.sum())
-    cbar = fig.colorbar(img, ax=ax)
-    cbar.set_label("loss")
-    ax.set_ylabel("latent chi^2")
-    ax.set_xlabel("spectral chi^2")
-    ax.set_xlim(0,30)
-    ax.set_ylim(0,5)
-    plt.savefig("similaity.png",dpi=120)
-    exit()
+embed_color=[z_sdss[rand1],z_boss[rand2]]
+c_range = [0,0.5];cmap="gist_rainbow";cbar_label = "$z$"
+
+s_mat= [s_sdss.detach().numpy().T,s_boss.detach().numpy().T]
+s=np.hstack((s_mat[0],s_mat[1]))
+print("\n\ns:",s.shape)
+xlim  = (s[0].min(),s[0].max())
+ylim  = (s[1].min(),s[1].max())
+
+fig = plt.figure(constrained_layout=True,figsize=(18,12),dpi=200)
+gs = fig.add_gridspec(2, 6, width_ratios=[3,1,1,1,1,1],hspace=0.1)
+
+ax11 = fig.add_subplot(gs[0, 0])
+ax12 = fig.add_subplot(gs[0, 1])
+ax13 = fig.add_subplot(gs[0, 2])
+ax1 = [ax11,ax12,ax13]
+
+ax2 = fig.add_subplot(gs[0, 3:])
+ax3 = fig.add_subplot(gs[1, :2])
+ax4 = fig.add_subplot(gs[1, 2:])
+
+plot_detailedloss(loss,ax=ax2)
+
+# plot similarity
+plot_similarity(inspect_mix, [specs,weights,redshifts,
+                              instruments,names],ax=ax3)
+
+data = [specs,weights,redshifts,instruments,wh_joints]
+plot_model(data, inspect_mix, axs=ax1)
+# plot joint samples
+plot_joint_samples(s_mat,inspect_mix, data,ax=ax4,xlim=xlim,ylim=ylim)
+plt.savefig("[2D]joint-targets.png",dpi=200)
+#exit()
 
 # define augmented samples 
 nparam = 3
-w_factor = [];use_data=[];flat_weight=[];number = np.zeros(nparam);
-newz = np.linspace(0,0.5,nparam)
+use_data=[];number = np.zeros(nparam);
+newz = np.array([0.1,0.3,0.5])
 
 #newz = np.array([-1e-2,1e-2])
 #number = np.array([0,0])
 locid = ["z=%.1f"%(zz) for zz,n in zip(newz,number)]
 locid += ["raw data"]
-
-#print(newz)
-#newz+=0.21601364016532898#0.4863503873348236
 newz[newz<0]=0;newz[newz>0.5]=0.5
-#number = np.random.randint(100,300, size=len(newz))#[0,500,1000]#
 params = np.array([newz,number]).T
 
-interesting = [2,3,4,5,474,617,5234]#[2,3,4,5,6]# 185,1,65
+
+name = ["target","augment"]
+colors = [['salmon','skyblue'],['salmon','skyblue'],['orange',"navy"],['gold','azure']]
 for wh_number in interesting:
     wh_sdss = [wh_joint_sdss[wh_number]]
     wh_boss = [wh_joint_boss[wh_number]]
@@ -930,7 +1068,6 @@ for wh_number in interesting:
     gs = fig.add_gridspec(4, 4, width_ratios=[1,1,0.5,0.5],hspace=0.01)
     ax1 = fig.add_subplot(gs[:2, 0])
     ax2 = fig.add_subplot(gs[:2, 1])
-
     ax3 = fig.add_subplot(gs[0, 2])
     ax4 = fig.add_subplot(gs[0, 3])
     ax10 = fig.add_subplot(gs[1, 2:])
@@ -945,9 +1082,8 @@ for wh_number in interesting:
     axs = [sdss_axs,boss_axs]
 
     embed,mean_loss,cross_loss,mean_weights,other = \
-    fake_jitter(params,instruments,which, model_free=use_data,
-                flat_weight=flat_weight,locid=locid,
-                w_factor=w_factor,fix_z=False,offset=10,
+    spectra_multiplot(params,instruments,which,
+                locid=locid,offset=10,
                 prim_xlim=None,#[2385,2450],#[6800,7000],#[6500,6600],
                 axs_list=[sdss_axs,boss_axs])
 
@@ -964,11 +1100,6 @@ for wh_number in interesting:
     embedded_batch = [embedded[:2],embedded[2:4],embedded[4:]]
 
     plot_latent(embed,true_z,[ax3,ax4],titles=titles,locid=locid)
-    colors = [['salmon','skyblue'],['salmon','skyblue'],['orange',"navy"],['gold','azure']]
-    name = ["target","#jitter+redshift"]
-
-    embed_color=[z_sdss[rand1],z_boss[rand2]]
-    c_range = [0,0.5];cmap="gist_rainbow";cbar_label = "$z$"
 
     mark_id = np.array(ids_sdss)[wh_sdss]
     comment = [{"ID":mark_id,"wh":1},
@@ -977,14 +1108,11 @@ for wh_number in interesting:
                    cbar_label=cbar_label, c_range=c_range,
                    markers=["o","^","s"],color=colors, ax=ax9, mute=True, cmap=cmap)
     
-    #xlim = (-0.2,5);ylim = (-0.2,6)
-    xlim = (-0.2,7);ylim = (-0.2,7)
-    
     ax9.set_xlim(xlim);ax9.set_ylim(ylim)
 
     text = "Data similarity:\nSDSS/BOSS as model: %.2f vs. %.2f\n"%(cross_loss[1],cross_loss[0])
     text += "SDSS/BOSS weight: %.2f vs. %.2f"%(mean_weights[0],mean_weights[1])
-    ax9.text(0.3*xlim[1],0.8*ylim[1],text,fontsize=20)
+    ax9.text(xlim[0],0.8*ylim[1],text,fontsize=20)
 
     ax = ax10
     wrest = wave_rest;msk = (wrest>3000)*(wrest<7500)
@@ -997,50 +1125,3 @@ for wh_number in interesting:
     ax.legend(loc=4)
     plt.savefig("[%d]z=%.2f.png"%(wh_number,true_z[0]),dpi=200)
 
-
-if "skip" in sys.argv: exit()
-
-n_joint = 200
-rand = np.array(random.sample(range(len(wh_joint_sdss)), n_joint))
-s_track = []
-
-mark_ids = rand
-for j in range(n_encoder):
-    inds = np.array([wh_joint_sdss,wh_joint_boss][j])[rand]
-    s, _, _ = inspect_mix[j]._forward(specs[j][inds], weights[j][inds],
-                                      instruments[j],redshifts[j][inds])
-    s = s.detach().numpy().T
-    s_track.append(s)
-
-diff = np.sqrt(np.sum((s_track[0]-s_track[1])**2, axis=0))
-med_diff = np.median(diff)
-
-dist_rank = np.argsort(diff)[::-1]
-diff = diff[dist_rank]
-mask_names = mark_ids[dist_rank]
-
-text = "Rank   No.   Distance\n"
-for ii in range(10):
-    text += "%d         %d       %.2f\n"%(ii+1,mask_names[ii],diff[ii])
-text += "(median distance = %.3f)"%(med_diff)
-colors = [['gold','navy']]
-
-embedded_batch = [embedded[:2],s_track]
-comment = [{"ID":mark_ids,"wh":0, "pos":(-10,0),"fs":5}]
-#comment = []
-
-fig,ax = plt.subplots(figsize=(12,8),dpi=200)
-#zorder=[10,0];alpha=[1, 0.2] # show SDSS 
-#zorder=[0,10];alpha=[0.2, 1] # show BOSS 
-zorder=[0,0];alpha=[0.2, 0.2]
-
-plot_embedding(embedded_batch,embed_color,name=name,comment=comment,
-               cbar_label=cbar_label, c_range=c_range,cmap=cmap, zorder=zorder, alpha=alpha,
-               markers=["o","^","s"],color=colors, ax=ax,mute=True)
-ax.set_title("Random joint targets (N=%d)"%n_joint)
-
-#ax.text(6,2,text,fontsize=15)
-ax.text(0.1*xlim[1],0.5*ylim[1],text,fontsize=15)
-ax.set_xlim(xlim);ax.set_ylim(ylim)
-#plt.tight_layout()
-plt.savefig("[2D]%d-joint-targets.png"%(n_joint),dpi=200)
