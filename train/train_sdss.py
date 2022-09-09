@@ -45,6 +45,8 @@ def train(model, instrument, trainloader, validloader, n_epoch=200, n_batch=None
             if verbose:
                 train_loss, valid_loss = losses[-1]
                 print(f'====> Epoch: {epoch-1} TRAINING Loss: {train_loss:.3e}  VALIDATION Loss: {valid_loss:.3e}')
+                if instrument.lsf is not None:
+                    print (f'LSF: {instrument.lsf.weight.data}')
         except: # OK if losses are empty
             pass
 
@@ -120,8 +122,19 @@ if __name__ == "__main__":
     parser.add_argument("-v", "--verbose", help="verbose printing", action="store_true")
     args = parser.parse_args()
 
+    # set LSF if requested
+    if args.lsf_size > 0:
+        lsf = torch.zeros(args.lsf_size)
+        lsf[args.lsf_size // 2] = 1
+    else:
+        lsf = None
+
     # define SDSS instrument
-    instrument = SDSS()
+    instrument = SDSS(lsf=lsf)
+
+    # fit the LSF
+    if args.lsf_size > 0:
+        instrument.lsf.weight.requires_grad = True
 
     # restframe wavelength for reconstructed spectra
     z_max = 0.2
@@ -129,13 +142,6 @@ if __name__ == "__main__":
     lmbda_max = instrument.wave_obs.max()
     bins = int(instrument.wave_obs.shape[0] * (1 + z_max))
     wave_rest = torch.linspace(lmbda_min, lmbda_max, bins, dtype=torch.float32)
-
-    # set LSF if requested
-    if args.lsf_size > 0:
-        lsf_kernel = torch.zeros(args.lsf_size)
-        lsf_kernel[args.lsf_size // 2] = 1
-        lsf_wave = instrument.wave_obs[:args.lsf_size]
-        instrument.set_lsf(lsf_kernel, lsf_wave, wave_rest)
 
     # data loaders
     trainloader = SDSS.get_data_loader(args.dir, which="train", batch_size=args.batch_size, shuffle=True)
