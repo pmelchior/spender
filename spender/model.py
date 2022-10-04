@@ -9,14 +9,17 @@ class MLP(nn.Module):
                  n_in,
                  n_out,
                  n_hidden=(16, 16, 16),
+                 act=(nn.LeakyReLU(), nn.LeakyReLU(), nn.LeakyReLU(), nn.LeakyReLU()),
                  dropout=0):
         super(MLP, self).__init__()
+
+        assert len(act) == len(n_hidden) + 1
 
         layer = []
         n_ = [n_in, *n_hidden, n_out]
         for i in range(len(n_)-1):
                 layer.append(nn.Linear(n_[i], n_[i+1]))
-                layer.append(nn.LeakyReLU())
+                layer.append(act[i])
                 layer.append(nn.Dropout(p=dropout))
         self.mlp = nn.Sequential(*layer)
 
@@ -28,7 +31,13 @@ class MLP(nn.Module):
 #### based on Serra 2018 ####
 #### with robust feature combination from Geisler 2020 ####
 class SpectrumEncoder(nn.Module):
-    def __init__(self, instrument, n_latent, n_hidden=(128, 64, 32), n_aux=1, dropout=0):
+    def __init__(self,
+                 instrument,
+                 n_latent,
+                 n_hidden=(128, 64, 32),
+                 act=(nn.PReLU(128), nn.PReLU(64), nn.PReLU(32), nn.Identity()),
+                 n_aux=1,
+                 dropout=0):
 
         super(SpectrumEncoder, self).__init__()
         self.instrument = instrument
@@ -44,8 +53,8 @@ class SpectrumEncoder(nn.Module):
         self.pool1, self.pool2 = tuple(nn.MaxPool1d(s, padding=s//2) for s in sizes[:2])
         self.softmax = nn.Softmax(dim=-1)
 
-        # small MLP to go from CNN features + redshift to latents
-        self.mlp = MLP(self.n_feature + n_aux, self.n_latent, n_hidden=n_hidden, dropout=dropout)
+        # small MLP to go from CNN features + aux to latents
+        self.mlp = MLP(self.n_feature + n_aux, self.n_latent, n_hidden=n_hidden, act=act, dropout=dropout)
 
 
     def _conv_blocks(self, filters, sizes, dropout=0):
