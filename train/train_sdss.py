@@ -137,7 +137,7 @@ if __name__ == "__main__":
         instrument.lsf.weight.requires_grad = True
 
     # restframe wavelength for reconstructed spectra
-    z_max = 0.2
+    z_max = 0.5
     lmbda_min = instrument.wave_obs.min()/(1+z_max)
     lmbda_max = instrument.wave_obs.max()
     bins = int(instrument.wave_obs.shape[0] * (1 + z_max))
