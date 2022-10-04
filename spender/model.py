@@ -26,6 +26,18 @@ class MLP(nn.Module):
     def forward(self, x):
         return self.mlp(x)
 
+#### Speculator activation function ####
+#### from Alsing+ 2020              ####
+class SpeculatorActivation(nn.Module):
+    def __init__(self, num_parameters):
+        super().__init__()
+
+        self.beta = nn.Parameter(torch.ones(num_parameters), requires_grad=True)
+        self.gamma = nn.Parameter(torch.zeros(num_parameters), requires_grad=True)
+
+    def forward(self, x):
+        # eq 8 in Alsing+2020
+        return (self.gamma + (1 - self.gamma)/(1 + torch.exp(-self.beta * x))) * x
 
 #### Spectrum encoder    ####
 #### based on Serra 2018 ####
@@ -70,7 +82,7 @@ class SpectrumEncoder(nn.Module):
                              padding=p,
                             )
             norm = nn.InstanceNorm1d(f)
-            act = nn.PReLU(num_parameters=f)
+            act = nn.PReLU(f)
             drop = nn.Dropout(p=dropout)
             convs.append(nn.Sequential(conv, norm, act, drop))
         return tuple(convs)
@@ -113,6 +125,7 @@ class SpectrumDecoder(MLP):
                  wave_rest,
                  n_latent=5,
                  n_hidden=(64, 256, 1024),
+                 act=(nn.LeakyReLU(), nn.LeakyReLU(), nn.LeakyReLU(), nn.LeakyReLU()),
                  dropout=0,
                 ):
 
@@ -120,6 +133,7 @@ class SpectrumDecoder(MLP):
             n_latent,
             len(wave_rest),
             n_hidden=n_hidden,
+            act=act,
             dropout=dropout,
             )
 
@@ -251,6 +265,7 @@ class SpectrumAutoencoder(BaseAutoencoder):
                  n_latent=10,
                  n_aux=1,
                  n_hidden=(64, 256, 1024),
+                 act=(nn.LeakyReLU(), nn.LeakyReLU(), nn.LeakyReLU(), nn.LeakyReLU()),
                  normalize=False,
                 ):
 
@@ -260,6 +275,7 @@ class SpectrumAutoencoder(BaseAutoencoder):
             wave_rest,
             n_latent,
             n_hidden=n_hidden,
+            act=act,
         )
 
         super(SpectrumAutoencoder, self).__init__(

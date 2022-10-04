@@ -1,1 +1,1 @@
-from .model import SpectrumEncoder, SpectrumDecoder, SpectrumAutoencoder
+from .model import SpectrumEncoder, SpectrumDecoder, SpectrumAutoencoder, SpeculatorActivation
