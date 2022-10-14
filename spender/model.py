@@ -32,12 +32,12 @@ class SpeculatorActivation(nn.Module):
     def __init__(self, num_parameters):
         super().__init__()
 
-        self.beta = nn.Parameter(torch.ones(num_parameters), requires_grad=True)
-        self.gamma = nn.Parameter(torch.zeros(num_parameters), requires_grad=True)
+        self.beta = nn.Parameter(torch.randn(num_parameters), requires_grad=True)
+        self.gamma = nn.Parameter(torch.randn(num_parameters), requires_grad=True)
 
     def forward(self, x):
         # eq 8 in Alsing+2020
-        return (self.gamma + (1 - self.gamma)/(1 + torch.exp(-self.beta * x))) * x
+        return (self.gamma + (1 - self.gamma) * torch.sigmoid(self.beta * x)) * x
 
 #### Spectrum encoder    ####
 #### based on Serra 2018 ####
