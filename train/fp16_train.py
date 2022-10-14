@@ -82,7 +82,7 @@ def similarity_loss(instrument, model, spec, w, z, s, slope=0.5, individual=Fals
     W =  N / W
 
     N = N.sum(-1)
-    N[N==0] = 1 
+    N[N==0] = 1
     # dissimilarity of spectra
     # of order unity, larger for spectrum pairs with more comparable bins
     spec_sim = (W * S).sum(-1) / N
@@ -283,7 +283,7 @@ def train(models,
 
         slope = ANNEAL_SCHEDULE[(epoch_ - epoch)%len(ANNEAL_SCHEDULE)]
         if n_epoch-epoch_<=10: slope=0 # turn off similarity
-        
+
         if verbose and similarity:
             print("similarity info:",slope)
 
@@ -427,7 +427,7 @@ if __name__ == "__main__":
     annealing_step = 0.05
     ANNEAL_SCHEDULE = np.arange(0,1,annealing_step)
     ANNEAL_SCHEDULE = np.hstack((np.zeros(20),ANNEAL_SCHEDULE))
-    
+
     if args.verbose and args.similarity:
         print("similarity_slope:",len(ANNEAL_SCHEDULE),ANNEAL_SCHEDULE)
 
@@ -437,7 +437,7 @@ if __name__ == "__main__":
                                    wave_rest,
                                    n_latent=args.latents,
                                    n_hidden=n_hidden,
-                                   normalize=True)
+                                   normalize=False)
               for instrument in instruments ]
     # use same decoder
     if n_encoder==2:models[1].decoder = models[0].decoder
