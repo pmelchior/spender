@@ -156,7 +156,7 @@ if __name__ == "__main__":
             instrument,
             wave_rest,
             n_latent=args.latents,
-            normalize=True,
+            normalize=False,
     )
 
     # check if outfile already exists, continue only of -c is set
