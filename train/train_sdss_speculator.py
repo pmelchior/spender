@@ -157,7 +157,7 @@ if __name__ == "__main__":
             wave_rest,
             n_latent=args.latents,
             act=(SpeculatorActivation(64), SpeculatorActivation(256), SpeculatorActivation(1024), SpeculatorActivation(len(wave_rest))),
-            normalize=True,
+            normalize=False,
     )
 
     # check if outfile already exists, continue only of -c is set
