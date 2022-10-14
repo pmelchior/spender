@@ -113,6 +113,7 @@ class SpectrumDecoder(MLP):
                  wave_rest,
                  n_latent=5,
                  n_hidden=(64, 256, 1024),
+                 act=(nn.LeakyReLU(), nn.LeakyReLU(), nn.LeakyReLU(), nn.LeakyReLU()),
                  dropout=0,
                 ):
 
@@ -120,6 +121,7 @@ class SpectrumDecoder(MLP):
             n_latent,
             len(wave_rest),
             n_hidden=n_hidden,
+            act=act,
             dropout=dropout,
             )
 
@@ -251,6 +253,7 @@ class SpectrumAutoencoder(BaseAutoencoder):
                  n_latent=10,
                  n_aux=1,
                  n_hidden=(64, 256, 1024),
+                 act=(nn.LeakyReLU(), nn.LeakyReLU(), nn.LeakyReLU(), nn.LeakyReLU()),
                  normalize=False,
                 ):
 
@@ -260,6 +263,7 @@ class SpectrumAutoencoder(BaseAutoencoder):
             wave_rest,
             n_latent,
             n_hidden=n_hidden,
+            act=act,
         )
 
         super(SpectrumAutoencoder, self).__init__(
