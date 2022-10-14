@@ -143,7 +143,7 @@ class SpectrumDecoder(MLP):
         self.register_buffer('wave_rest', wave_rest)
 
     def decode(self, s):
-        return super().forward(s)
+        return super().forward(s) + 1
 
     def forward(self, s, instrument=None, z=None):
         # restframe
