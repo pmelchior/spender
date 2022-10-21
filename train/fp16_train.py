@@ -203,6 +203,10 @@ def load_model(filename, models, instruments):
     model_struct = torch.load(filename, map_location=device)
 
     for i, model in enumerate(models):
+        # backwards compat: encoder.mlp instead of encoder.mlp.mlp
+        if 'encoder.mlp.mlp.0.weight' in model_struct['model'][i].keys():
+            from collections import OrderedDict
+            model_struct['model'][i] = OrderedDict([(k.replace('mlp.mlp', 'mlp'), v) for k, v in model_struct['model'][i].items()])
         # backwards compat: add instrument to encoder
         try:
             model.load_state_dict(model_struct['model'][i], strict=False)

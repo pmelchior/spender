@@ -4,15 +4,16 @@ from torch import nn
 from torchinterp1d import Interp1d
 
 #### Simple MLP ####
-class MLP(nn.Module):
+class MLP(nn.Sequential):
     def __init__(self,
                  n_in,
                  n_out,
                  n_hidden=(16, 16, 16),
-                 act=(nn.LeakyReLU(), nn.LeakyReLU(), nn.LeakyReLU(), nn.LeakyReLU()),
+                 act=None,
                  dropout=0):
-        super(MLP, self).__init__()
 
+        if act is None:
+            act = [ nn.LeakyReLU(), ] * (len(n_hidden) + 1)
         assert len(act) == len(n_hidden) + 1
 
         layer = []
@@ -21,21 +22,18 @@ class MLP(nn.Module):
                 layer.append(nn.Linear(n_[i], n_[i+1]))
                 layer.append(act[i])
                 layer.append(nn.Dropout(p=dropout))
-        self.mlp = nn.Sequential(*layer)
 
-    def forward(self, x):
-        return self.mlp(x)
+        super(MLP, self).__init__(*layer)
 
 
 #### Spectrum encoder    ####
 #### based on Serra 2018 ####
-#### with robust feature combination from Geisler 2020 ####
 class SpectrumEncoder(nn.Module):
     def __init__(self,
                  instrument,
                  n_latent,
                  n_hidden=(128, 64, 32),
-                 act=(nn.PReLU(128), nn.PReLU(64), nn.PReLU(32), nn.Identity()),
+                 act=None,
                  n_aux=1,
                  dropout=0):
 
@@ -54,6 +52,10 @@ class SpectrumEncoder(nn.Module):
         self.softmax = nn.Softmax(dim=-1)
 
         # small MLP to go from CNN features + aux to latents
+        if act is None:
+            act = [ nn.PReLU(n) for n in n_hidden ]
+            # last activation identity to have latents centered around 0
+            act.append(nn.Identity())
         self.mlp = MLP(self.n_feature + n_aux, self.n_latent, n_hidden=n_hidden, act=act, dropout=dropout)
 
 
@@ -70,7 +72,7 @@ class SpectrumEncoder(nn.Module):
                              padding=p,
                             )
             norm = nn.InstanceNorm1d(f)
-            act = nn.PReLU(num_parameters=f)
+            act = nn.PReLU(f)
             drop = nn.Dropout(p=dropout)
             convs.append(nn.Sequential(conv, norm, act, drop))
         return tuple(convs)
@@ -108,22 +110,24 @@ class SpectrumEncoder(nn.Module):
 
 #### Spectrum decoder ####
 #### Simple MLP but with explicit redshift and instrument path ####
-class SpectrumDecoder(MLP):
+class SpectrumDecoder(nn.Module):
     def __init__(self,
                  wave_rest,
                  n_latent=5,
                  n_hidden=(64, 256, 1024),
-                 act=(nn.LeakyReLU(), nn.LeakyReLU(), nn.LeakyReLU(), nn.LeakyReLU()),
+                 act=None,
                  dropout=0,
                 ):
 
-        super(SpectrumDecoder, self).__init__(
+        super(SpectrumDecoder, self).__init__()
+
+        self.mlp = MLP(
             n_latent,
             len(wave_rest),
             n_hidden=n_hidden,
             act=act,
             dropout=dropout,
-            )
+        )
 
         self.n_latent = n_latent
 
@@ -131,7 +135,7 @@ class SpectrumDecoder(MLP):
         self.register_buffer('wave_rest', wave_rest)
 
     def decode(self, s):
-        return super().forward(s)
+        return self.mlp.forward(s)
 
     def forward(self, s, instrument=None, z=None):
         # restframe
@@ -253,7 +257,7 @@ class SpectrumAutoencoder(BaseAutoencoder):
                  n_latent=10,
                  n_aux=1,
                  n_hidden=(64, 256, 1024),
-                 act=(nn.LeakyReLU(), nn.LeakyReLU(), nn.LeakyReLU(), nn.LeakyReLU()),
+                 act=None,
                  normalize=False,
                 ):
 
