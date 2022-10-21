@@ -13,6 +13,12 @@ from spender.data.sdss import SDSS
 def load_model(filename, model, instrument):
     device = instrument.wave_obs.device
     model_struct = torch.load(filename, map_location=device)
+    
+    # backwards compat: encoder.mlp instead of encoder.mlp.mlp
+    if 'encoder.mlp.mlp.0.weight' in model_struct['model'].keys():
+        from collections import OrderedDict
+        model_struct['model'] = OrderedDict([(k.replace('mlp.mlp', 'mlp'), v) for k, v in model_struct['model'].items()])
+
     # backwards compat: add instrument to encoder
     try:
         model.load_state_dict(model_struct['model'], strict=False)
