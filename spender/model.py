@@ -25,6 +25,21 @@ class MLP(nn.Sequential):
 
         super(MLP, self).__init__(*layer)
 
+#### Speculator activation function ####
+#### from Alsing+ 2020              ####
+class SpeculatorActivation(nn.Module):
+    def __init__(self, num_parameters, plus_one=False):
+        super().__init__()
+        self.plus_one = plus_one
+        self.beta = nn.Parameter(torch.randn(num_parameters), requires_grad=True)
+        self.gamma = nn.Parameter(torch.randn(num_parameters), requires_grad=True)
+
+    def forward(self, x):
+        # eq 8 in Alsing+2020
+        x = (self.gamma + (1 - self.gamma) * torch.sigmoid(self.beta * x)) * x
+        if self.plus_one:
+            return x + 1
+        return x
 
 #### Spectrum encoder    ####
 #### based on Serra 2018 ####
