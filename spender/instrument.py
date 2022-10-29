@@ -14,10 +14,11 @@ class BaseInstrument(nn.Module):
 
         self.calibration = calibration
         if lsf is not None:
-            # construct conv1d layer
-            self.lsf = nn.Conv1d(1, 1, len(lsf), bias=False, padding='same')
-            # if LSF should be fit, set `requires_grad=True`
-            self.lsf.weight = nn.Parameter(lsf.flip(0).reshape(1,1,-1), requires_grad=False)
+            assert isinstance(lsf, (LSF, torch.Tensor))
+            if isinstance(lsf, LSF):
+                self.lsf = lsf
+            else:
+                self.lsf = LSF(lsf)
         else:
             self.lsf = None
 
@@ -28,6 +29,16 @@ class BaseInstrument(nn.Module):
     @property
     def name(self):
         return self.__class__.__name__
+
+class LSF(nn.Conv1d):
+    def __init__(self, kernel, requires_grad=True):
+        super(LSF, self).__init__(1, 1, len(kernel), bias=False, padding='same')
+        # if LSF should be fit, set `requires_grad=True`
+        self.weight = nn.Parameter(kernel.flip(0).reshape(1,1,-1), requires_grad=requires_grad)
+
+    def forward(self, x):
+        # convolution with flux preservation
+        return super(LSF, self).forward(x) / self.weight.sum()
 
 def skylines_mask(waves, intensity_limit=2, radii=5):
     this_dir, this_filename = os.path.split(__file__)
