@@ -109,6 +109,12 @@ class SpectrumEncoder(nn.Module):
         h, a = self._downsample(x)
         # softmax attention
         a = self.softmax(a)
+
+        # attach hook to extract backward gradient of a scalar prediction
+        # for Grad-FAM (Feature Activation Map)
+        if ~self.training and a.requires_grad == True:
+            a.register_hook(self._attention_hook)
+
         # apply attention
         x = torch.sum(h * a, dim=2)
 
@@ -121,6 +127,16 @@ class SpectrumEncoder(nn.Module):
     @property
     def n_parameters(self):
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
+    def _attention_hook(self, grad):
+        self._attention_grad = grad
+
+    @property
+    def attention_grad(self):
+        if hasattr(self, '_attention_grad'):
+            return self._attention_grad
+        else:
+            return None
 
 
 #### Spectrum decoder ####
