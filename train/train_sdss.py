@@ -13,7 +13,7 @@ from spender.data.sdss import SDSS
 def load_model(filename, model, instrument):
     device = instrument.wave_obs.device
     model_struct = torch.load(filename, map_location=device)
-    
+
     # backwards compat: encoder.mlp instead of encoder.mlp.mlp
     if 'encoder.mlp.mlp.0.weight' in model_struct['model'].keys():
         from collections import OrderedDict
@@ -138,10 +138,6 @@ if __name__ == "__main__":
     # define SDSS instrument
     instrument = SDSS(lsf=lsf)
 
-    # fit the LSF
-    if args.lsf_size > 0:
-        instrument.lsf.weight.requires_grad = True
-
     # restframe wavelength for reconstructed spectra
     z_max = 0.5
     lmbda_min = instrument.wave_obs.min()/(1+z_max)
@@ -162,7 +158,6 @@ if __name__ == "__main__":
             instrument,
             wave_rest,
             n_latent=args.latents,
-            normalize=False,
     )
 
     # check if outfile already exists, continue only of -c is set

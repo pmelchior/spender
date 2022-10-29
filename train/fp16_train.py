@@ -441,7 +441,7 @@ if __name__ == "__main__":
                                    wave_rest,
                                    n_latent=args.latents,
                                    n_hidden=n_hidden,
-                                   normalize=False)
+                                   )
               for instrument in instruments ]
     # use same decoder
     if n_encoder==2:models[1].decoder = models[0].decoder

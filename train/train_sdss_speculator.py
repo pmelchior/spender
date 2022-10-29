@@ -138,10 +138,6 @@ if __name__ == "__main__":
     # define SDSS instrument
     instrument = SDSS(lsf=lsf)
 
-    # fit the LSF
-    if args.lsf_size > 0:
-        instrument.lsf.weight.requires_grad = True
-
     # restframe wavelength for reconstructed spectra
     z_max = 0.5
     lmbda_min = instrument.wave_obs.min()/(1+z_max)
@@ -163,7 +159,6 @@ if __name__ == "__main__":
             wave_rest,
             n_latent=args.latents,
             act=(SpeculatorActivation(64), SpeculatorActivation(256), SpeculatorActivation(1024), SpeculatorActivation(len(wave_rest), plus_one=True)),
-            normalize=False,
     )
 
     # check if outfile already exists, continue only of -c is set
