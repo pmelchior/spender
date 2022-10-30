@@ -139,14 +139,22 @@ class SDSS(Instrument):
         specinfo = hdulist[2].data[0]
         id = torch.tensor((specinfo['PLATE'], specinfo['MJD'], specinfo['FIBERID']), dtype=torch.int)
 
-        # normalize spectrum to make it easier for encoder
-        norm = torch.median(spec[w>0])
-        spec /= norm
-        w *= norm**2
-
         # get redshift and error
         z = torch.tensor(specinfo['Z'])
         zerr = torch.tensor(specinfo['Z_ERR'])
+
+        # normalize spectrum:
+        # for redshift invariant encoder: select norm window in restframe
+        wave_rest = cls._wave_obs / (1 + z)
+        # flatish region that is well observed out to z ~ 0.5
+        sel = (w > 0) & (wave_rest > 5300) & (wave_rest < 5850)
+        norm = torch.median(spec[sel])
+        # remove spectra (from training) for which no valid norm could be found
+        if not torch.isfinite(norm):
+            norm = 0
+        else:
+            spec /= norm
+        w *= norm**2
 
         return spec, w, z, id, norm, zerr
 
@@ -168,13 +176,13 @@ class SDSS(Instrument):
     @classmethod
     def get_ids(cls, dir, selection_fct=None):
         main_file = os.path.join(dir, "specObj-dr16.fits")
-        if not os.path.isfile(mainfile):
+        if not os.path.isfile(main_file):
             url = "https://data.sdss.org/sas/dr16/sdss/spectro/redux/specObj-dr16.fits"
             print (f"downloading {url}, this will take a while...")
             urllib.request.urlretrieve(url, main_file)
 
         print(f"opening {main_file}")
-        specobj = aTable.Table.read(spec_file)
+        specobj = aTable.Table.read(main_file)
 
         if selection_fct is None:
             # apply default selections
