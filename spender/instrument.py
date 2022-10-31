@@ -24,7 +24,6 @@ class BaseInstrument(nn.Module):
 
         # register wavelength tensors on the same device as the entire model
         self.register_buffer('wave_obs', wave_obs)
-        self.register_buffer('skyline_mask', skylines_mask(wave_obs))
 
     @property
     def name(self):
@@ -40,27 +39,17 @@ class LSF(nn.Conv1d):
         # convolution with flux preservation
         return super(LSF, self).forward(x) / self.weight.sum()
 
-def skylines_mask(waves, intensity_limit=2, radii=5):
-    this_dir, this_filename = os.path.split(__file__)
-    filename = os.path.join(this_dir, "data", "sky-lines.txt")
-    f=open(filename,"r")
-    content = f.readlines()
-    f.close()
+def get_skyline_mask(wave_obs, min_intensity=2, mask_size=5):
+    filename = '../spender/data/sky-lines.txt'
+    skylines = np.genfromtxt(filename, names=['wavelength', 'intensity', 'name', 'status'], dtype=None, encoding=None)
+    # wavelength in nm, need A
+    skylines['wavelength'] *= 10
 
-    skylines = [[10*float(line.split()[0]),float(line.split()[1])] for line in content if not line[0]=="#" ]
-    skylines = np.array(skylines)
-
-    n_lines = 0
-    mask = ~(waves>0)
-
-    for line in skylines:
-        line_pos, intensity = line
-        if line_pos>waves.max():continue
-        if intensity<intensity_limit:continue
-        n_lines += 1
-        mask[(waves<(line_pos+radii))*(waves>(line_pos-radii))] = True
-
-    non_zero = torch.count_nonzero(mask)
+    mask = torch.zeros(len(wave_obs), dtype=torch.bool)
+    for line in skylines[skylines['intensity'] > min_intensity]:
+        # increase masking area with intensity
+        mask_size_ = mask_size * (1 + np.log10(line['intensity'] / min_intensity))
+        mask |= (wave_obs - line['wavelength']).abs() <  mask_size_
     return mask
 
 # allow registry of new instruments
