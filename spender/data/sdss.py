@@ -1,6 +1,7 @@
 import glob, os, urllib.request
 import numpy as np
 import torch
+import pickle
 from torch.utils.data import DataLoader
 from torchinterp1d import Interp1d
 import astropy.io.fits as fits
@@ -31,7 +32,7 @@ class SDSS(Instrument):
     @classmethod
     def list_batches(cls, dir, which=None, tag=None):
         if tag is None:
-            tag = "chunk1024"
+            tag = "variable"
         classname = cls.__mro__[0].__name__
         filename = f"{classname}{tag}_*.pkl"
         batch_files = glob.glob(dir + "/" + filename)
@@ -71,9 +72,9 @@ class SDSS(Instrument):
 
     @classmethod
     def get_spectrum(cls, dir, plate, mjd, fiberid, return_file=False):
+        plate, mjd, fiberid = [int(i) for i in [plate, mjd, fiberid]]
         filename = "spec-%s-%i-%s.fits" % (str(plate).zfill(4), mjd, str(fiberid).zfill(4))
-        classname = cls.__mro__[0].__name__.lower()
-        dirname = os.path.join(dir, f"{classname}-spectra")
+        dirname = os.path.join(dir, str(plate).zfill(4))
         flocal = os.path.join(dirname, filename)
         if not os.path.isfile(flocal):
             os.makedirs(dirname, exist_ok=True)
@@ -113,7 +114,7 @@ class SDSS(Instrument):
         return display.Image(flocal)
 
     @classmethod
-    def prepare_spectrum(cls, filename):
+    def prepare_spectrum(cls, filename, z):
         hdulist = fits.open(filename)
         data = hdulist[1].data
         loglam = data['loglam']
@@ -128,27 +129,34 @@ class SDSS(Instrument):
         # loglam is subset of _wave_obs, need to insert into extended tensor
         L = len(cls._wave_obs)
         start = int(np.around((loglam[0] - torch.log10(cls._wave_obs[0]).item())/0.0001))
-        end = min(start+len(loglam), L)
+        if start<0:
+            print("start<0!")
+            print("loglam[0]:",loglam[0],"start",start)
+            flux = flux[-start:]
+            ivar = ivar[-start:]
+            end = min(start+len(loglam), L)
+            start = 0
+        else:end = min(start+len(loglam), L)
         spec = torch.zeros(L)
         w = torch.zeros(L)
-         # explicit type conversion to float32 to get to little endian
+        # explicit type conversion to float32 to get to little endian
         spec[start:end]  = torch.from_numpy(flux.astype(np.float32))
         w[start:end] = torch.from_numpy(ivar.astype(np.float32))
 
         # get plate, mjd, fiberid info
-        specinfo = hdulist[2].data[0]
-        id = torch.tensor((specinfo['PLATE'], specinfo['MJD'], specinfo['FIBERID']), dtype=torch.int)
-
+        #specinfo = hdulist[2].data[0]
+        #id = torch.tensor((specinfo['PLATE'], specinfo['MJD'], specinfo['FIBERID']), dtype=torch.int)
         # get redshift and error
-        z = torch.tensor(specinfo['Z'])
-        zerr = torch.tensor(specinfo['Z_ERR'])
+        #z = torch.tensor(specinfo['Z'])
+        #zerr = torch.tensor(specinfo['Z_ERR'])
 
         # normalize spectrum:
         # for redshift invariant encoder: select norm window in restframe
         wave_rest = cls._wave_obs / (1 + z)
         # flatish region that is well observed out to z ~ 0.5
         sel = (w > 0) & (wave_rest > 5300) & (wave_rest < 5850)
-        norm = torch.median(spec[sel])
+        if sel.count_nonzero() == 0: norm = torch.tensor(0)
+        else: norm = torch.median(spec[sel])
         # remove spectra (from training) for which no valid norm could be found
         if not torch.isfinite(norm):
             norm = 0
@@ -156,12 +164,11 @@ class SDSS(Instrument):
             spec /= norm
         w *= norm**2
 
-        return spec, w, z, id, norm, zerr
+        return spec, w, norm
 
     @classmethod
     def make_batch(cls, dir, ids):
-        files = [ cls.get_spectrum(dir, plate, mjd, fiberid, return_file=True) for plate, mjd, fiberid in ids ]
-        N = len(files)
+        N = len(ids)
         L = len(cls._wave_obs)
         spec = torch.empty((N, L))
         w = torch.empty((N, L))
@@ -169,8 +176,12 @@ class SDSS(Instrument):
         id = torch.empty((N, 3), dtype=torch.int)
         norm = torch.empty(N)
         zerr = torch.empty(N)
-        for i, f in enumerate(files):
-            spec[i], w[i], z[i], id[i], norm[i], zerr[i] = cls.prepare_spectrum(f)
+        for i in range(N):
+            plate, mjd, fiberid, z_, zerr_ = ids[i]
+            f = cls.get_spectrum(dir, plate, mjd, fiberid, return_file=True)
+            spec[i], w[i], norm[i] = cls.prepare_spectrum(f, z_)
+            z[i], zerr[i] = z_, zerr_
+            id[i] = torch.tensor((plate, mjd, fiberid), dtype=torch.int)
         return spec, w, z, id, norm, zerr
 
     @classmethod
@@ -200,20 +211,23 @@ class SDSS(Instrument):
         plate = specobj['PLATE'][sel]
         mjd = specobj['MJD'][sel]
         fiberid = specobj['FIBERID'][sel]
-        return tuple(zip(plate, mjd, fiberid))
+        z = specobj['Z'][sel]
+        zerr = specobj['Z_ERR'][sel]
+        return tuple(zip(plate, mjd, fiberid, z, zerr))
 
     @classmethod
-    def augment_spectra(cls, batch, redshift=True, noise=True, mask=True, ratio=0.05):
+    def augment_spectra(cls, batch, redshift=True, noise=True, mask=True, ratio=0.05, z_new=None):
         spec, w, z = batch[:3]
         batch_size, spec_size = spec.shape
         device = spec.device
         wave_obs = cls._wave_obs.to(device)
 
         if redshift:
-            # uniform distribution of redshift offsets, width = z_lim
-            z_lim = 0.2
-            z_base = torch.relu(z-z_lim)
-            z_new = z_base+z_lim*(torch.rand(batch_size, device=device))
+            if z_new == None:
+                # uniform distribution of redshift offsets, width = z_lim
+                z_lim = 0.2
+                z_base = torch.relu(z-z_lim)
+                z_new = z_base+z_lim*(torch.rand(batch_size, device=device))
             # keep redshifts between 0 and 0.5
             z_new = torch.minimum(torch.nn.functional.relu(z_new), 0.5 * torch.ones(batch_size, device=device))
             zfactor = ((1 + z_new)/(1 + z))

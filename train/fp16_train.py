@@ -14,7 +14,7 @@ from spender.data.sdss import SDSS, BOSS
 from spender.util import mem_report, resample_to_restframe
 
 
-def prepare_train(seq,niter=700):
+def prepare_train(seq,niter=1000):
     for d in seq:
         if not "iteration" in d:d["iteration"]=niter
         if not "encoder" in d:d.update({"encoder":d["data"]})
@@ -428,9 +428,9 @@ if __name__ == "__main__":
     FULL = {"data":[True,True],"decoder":True}
     train_sequence = prepare_train([FULL])
 
-    annealing_step = 0.05
-    ANNEAL_SCHEDULE = np.arange(0,1,annealing_step)
-    ANNEAL_SCHEDULE = np.hstack((np.zeros(20),ANNEAL_SCHEDULE))
+    annealing_step = 0.10
+    ANNEAL_SCHEDULE = np.arange(0,10,annealing_step)
+    #ANNEAL_SCHEDULE = np.hstack((np.zeros(20),ANNEAL_SCHEDULE))
 
     if args.verbose and args.similarity:
         print("similarity_slope:",len(ANNEAL_SCHEDULE),ANNEAL_SCHEDULE)
