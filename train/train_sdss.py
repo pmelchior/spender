@@ -117,6 +117,7 @@ if __name__ == "__main__":
     parser.add_argument("-l", "--batch_number", help="number of batches per epoch", type=int, default=None)
     parser.add_argument("-e", "--epochs", help="number of epochs", type=int, default=200)
     parser.add_argument("-r", "--rate", help="learning rate", type=float, default=1e-3)
+    parser.add_argument("-S", "--superresolution", help="Superresolution factor", type=int, default=1)
     parser.add_argument("-L", "--lsf_size", help="LSF kernel size", type=int, default=0)
     parser.add_argument("-C", "--clobber", help="continue training of existing model", action="store_true")
     parser.add_argument("-v", "--verbose", help="verbose printing", action="store_true")
@@ -136,7 +137,7 @@ if __name__ == "__main__":
     z_max = 0.5
     lmbda_min = instrument.wave_obs.min()/(1+z_max)
     lmbda_max = instrument.wave_obs.max()
-    bins = int(instrument.wave_obs.shape[0] * (1 + z_max))
+    bins = args.superresolution * int(instrument.wave_obs.shape[0] * (1 + z_max))
     wave_rest = torch.linspace(lmbda_min, lmbda_max, bins, dtype=torch.float32)
 
     # data loaders
