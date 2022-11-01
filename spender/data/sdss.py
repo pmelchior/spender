@@ -8,11 +8,12 @@ import astropy.io.fits as fits
 import astropy.table as aTable
 from functools import partial
 
-from ..instrument import Instrument
+from ..instrument import Instrument, get_skyline_mask
 from ..util import BatchedFilesDataset, load_batch
 
 class SDSS(Instrument):
     _wave_obs = 10**torch.arange(3.578, 3.97, 0.0001)
+    _skyline_mask = get_skyline_mask(_wave_obs)
     _base_url = "https://data.sdss.org/sas/dr16/sdss/spectro/redux/26/spectra/lite/"
 
     def __init__(self, lsf=None, calibration=None):
@@ -120,10 +121,9 @@ class SDSS(Instrument):
         loglam = data['loglam']
         flux = data['flux']
         ivar = data['ivar']
-        sky = data['sky']
 
-        # apply bitmask, remove small values, and mask sky-dominated bins
-        mask = data['and_mask'].astype(bool) | (ivar <= 1e-6) | (flux < sky)
+        # apply bitmask, remove small values
+        mask = data['and_mask'].astype(bool) | (ivar <= 1e-6)
         ivar[mask] = 0
 
         # loglam is subset of _wave_obs, need to insert into extended tensor
@@ -142,6 +142,9 @@ class SDSS(Instrument):
         # explicit type conversion to float32 to get to little endian
         spec[start:end]  = torch.from_numpy(flux.astype(np.float32))
         w[start:end] = torch.from_numpy(ivar.astype(np.float32))
+
+        # remove regions around skylines
+        w[cls._skyline_mask] = 0
 
         # get plate, mjd, fiberid info
         #specinfo = hdulist[2].data[0]
@@ -265,6 +268,7 @@ class SDSS(Instrument):
 
 class BOSS(SDSS):
     _wave_obs = 10**torch.arange(3.549, 4.0175, 0.0001)
+    _skyline_mask = get_skyline_mask(_wave_obs)
     _base_url = "https://data.sdss.org/sas/dr16/eboss/spectro/redux/v5_13_0/spectra/lite/"
 
     def __init__(self, lsf=None, calibration=None):

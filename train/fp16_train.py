@@ -146,12 +146,9 @@ def _losses(model,
             batch,
             similarity=True,
             slope=0,
-            mask_skyline=True,
            ):
 
     spec, w, z = batch
-    if mask_skyline:
-        w[:, instrument.skyline_mask] = 0
 
     # need the latents later on if similarity=True
     s = model.encode(spec, aux=z.unsqueeze(1))
@@ -229,7 +226,6 @@ def train(models,
           verbose=False,
           lr=1e-4,
           n_batch=50,
-          mask_skyline=True,
           aug_fcts=None,
           similarity=True,
           consistency=True,
@@ -315,7 +311,6 @@ def train(models,
                     similarity=similarity,
                     consistency=consistency,
                     slope=slope,
-                    mask_skyline=mask_skyline,
                 )
                 # sum up all losses
                 loss = functools.reduce(lambda a, b: a+b , losses)
@@ -353,7 +348,6 @@ def train(models,
                         similarity=similarity,
                         consistency=consistency,
                         slope=slope,
-                        mask_skyline=mask_skyline,
                     )
                     # logging: validation
                     detailed_loss[1][which][epoch_] += tuple( l.item() if hasattr(l, 'item') else 0 for l in losses )

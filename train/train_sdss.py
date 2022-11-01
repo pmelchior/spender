@@ -30,7 +30,7 @@ def load_model(filename, model, instrument):
     return model, losses
 
 
-def train(model, instrument, trainloader, validloader, n_epoch=200, n_batch=None, mask_skyline=True, outfile=None, losses=None, verbose=False, lr=3e-4):
+def train(model, instrument, trainloader, validloader, n_epoch=200, n_batch=None, outfile=None, losses=None, verbose=False, lr=3e-4):
 
     optimizer = optim.Adam(model.parameters(), lr=lr)
     scheduler = optim.lr_scheduler.OneCycleLR(optimizer, lr, total_steps=n_epoch)
@@ -63,10 +63,6 @@ def train(model, instrument, trainloader, validloader, n_epoch=200, n_batch=None
         for k, batch in enumerate(trainloader):
             batch_size = len(batch[0])
             spec, w, z = batch
-
-            if mask_skyline:
-                w[:, instrument.skyline_mask] = 0
-
             loss = model.loss(spec, w, instrument=instrument, z=z)
             accelerator.backward(loss)
             train_loss += loss.item()
@@ -86,8 +82,6 @@ def train(model, instrument, trainloader, validloader, n_epoch=200, n_batch=None
             for k, batch in enumerate(validloader):
                 batch_size = len(batch[0])
                 spec, w, z = batch
-                if mask_skyline:
-                    w[:, instrument.skyline_mask] = 0
                 loss = model.loss(spec, w, instrument=instrument, z=z)
                 valid_loss += loss.item()
                 n_sample += batch_size
