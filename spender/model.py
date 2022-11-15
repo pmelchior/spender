@@ -243,7 +243,7 @@ class SpectrumDecoder(nn.Module):
         Dimensions for every hidden layer of the :class:`MLP`
     act: list of callables
         Activation functions after every layer. Needs to have len(n_hidden) + 1
-        If `None`, will be set to `LeakyReLU` for every layer.
+        If `None`, will be set to :class:`SpeculatorActivation` for every layer.
     dropout: float
         Dropout probability
     """
@@ -256,6 +256,10 @@ class SpectrumDecoder(nn.Module):
                 ):
 
         super(SpectrumDecoder, self).__init__()
+
+        if act is None:
+            act = [ SpeculatorActivation(n) for n in n_hidden ]
+            act.append(SpeculatorActivation(len(wave_rest), plus_one=True))
 
         self.mlp = MLP(
             n_latent,
