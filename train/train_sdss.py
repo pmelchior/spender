@@ -6,7 +6,7 @@ import torch
 from torch import nn
 from torch import optim
 from accelerate import Accelerator
-from spender import SpectrumAutoencoder
+from spender import SpectrumAutoencoder, SpeculatorActivation
 from spender.data.sdss import SDSS
 
 
@@ -141,8 +141,8 @@ if __name__ == "__main__":
     wave_rest = torch.linspace(lmbda_min, lmbda_max, bins, dtype=torch.float32)
 
     # data loaders
-    trainloader = SDSS.get_data_loader(args.dir, which="train", batch_size=args.batch_size, shuffle=True)
-    validloader = SDSS.get_data_loader(args.dir, which="valid", batch_size=args.batch_size)
+    trainloader = SDSS.get_data_loader(args.dir, tag="variable", which="train", batch_size=args.batch_size, shuffle=True)
+    validloader = SDSS.get_data_loader(args.dir, tag="variable", which="valid", batch_size=args.batch_size)
 
     if args.verbose:
         print ("Observed frame:\t{:.0f} .. {:.0f} A ({} bins)".format(instrument.wave_obs.min(), instrument.wave_obs.max(), len(instrument.wave_obs)))
@@ -153,6 +153,7 @@ if __name__ == "__main__":
             instrument,
             wave_rest,
             n_latent=args.latents,
+            act=(SpeculatorActivation(64), SpeculatorActivation(256), SpeculatorActivation(1024), SpeculatorActivation(len(wave_rest), plus_one=True)),
     )
 
     # check if outfile already exists, continue only of -c is set
