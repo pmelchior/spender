@@ -11,15 +11,50 @@ from ..instrument import Instrument, get_skyline_mask
 from ..util import BatchedFilesDataset, load_batch
 
 class SDSS(Instrument):
+    """SDSS instrument
+
+    Implements basic parameterization of the SDSS-II spectrograph as well as functions
+    to download and organize the spectra from the DR16 data archive.
+    """
     _wave_obs = 10**torch.arange(3.578, 3.97, 0.0001)
     _skyline_mask = get_skyline_mask(_wave_obs)
     _base_url = "https://data.sdss.org/sas/dr16/sdss/spectro/redux/26/spectra/lite/"
 
     def __init__(self, lsf=None, calibration=None):
+        """Create instrument
+
+        Parameters
+        ----------
+        lsf: :class:`LSF`
+            (optional) Line spread function model
+        calibration: callable
+            (optional) function to calibrate the observed spectrum
+        """
         super().__init__(SDSS._wave_obs, lsf=lsf, calibration=calibration)
 
     @classmethod
     def get_data_loader(cls, dir, which=None, tag=None, batch_size=1024, shuffle=False, shuffle_instance=False):
+        """Get a dataloader for batches of spectra
+
+        Parameters
+        ----------
+        dir: string
+            Root directory for data storage
+        which: ['train', 'valid', 'test'] or None
+            Which subset of the spectra to return. If `None`, returns all of them.
+        tag: string
+            Name to specify which batch files to load
+        batch_size: int
+            Number of spectra in each batch
+        shuffle: bool
+            Whether to shuffle the order of the batch files
+        shuffle_instance: bool
+            Whether to shuffle spectra within each batch
+
+        Returns
+        -------
+        :class:`torch.utils.data.DataLoader`
+        """
         files = cls.list_batches(dir, which=which, tag=tag)
         if which in ["train", "valid"]:
             subset = slice(0,3)
@@ -31,6 +66,21 @@ class SDSS(Instrument):
 
     @classmethod
     def list_batches(cls, dir, which=None, tag=None):
+        """List all batch files
+
+        Parameters
+        ----------
+        dir: string
+            Root directory for data storage
+        which: ['train', 'valid', 'test'] or None
+            Which subset of the spectra to return. If `None`, returns all of them.
+        tag: string
+            Name to specify which batch files to load
+
+        Returns
+        -------
+        list of filepaths
+        """
         if tag is None:
             tag = "chunk1024"
         classname = cls.__mro__[0].__name__
@@ -50,6 +100,24 @@ class SDSS(Instrument):
 
     @classmethod
     def save_batch(cls, dir, batch, tag=None, counter=None):
+        """Save batch into a pickled file
+
+        Parameters
+        ----------
+        dir: string
+            Root directory for data storage
+        batch: `torch.tensor`, shape (N, L)
+            Spectrum batch
+        tag: string
+            Name to specify which batch file name
+        counter: int
+            Set to add a batch counter to the filename
+
+        Returns
+        -------
+        None
+
+        """
         if tag is None:
             tag = f"chunk{len(batch)}"
         if counter is None:
@@ -62,6 +130,24 @@ class SDSS(Instrument):
 
     @classmethod
     def save_in_batches(cls, dir, ids, tag=None, batch_size=1024):
+        """Save all spectra for given ids into batch files
+
+        Parameters
+        ----------
+        dir: string
+            Root directory for data storage
+        ids: list of (plate, mjd, fiberid)
+            Identifier of spectrum
+        tag: string
+            Name to specify the batch file name
+        batch_size: int
+            Number of spectra in each batch
+
+        Returns
+        -------
+        None
+
+        """
         N = len(ids)
         idx = np.arange(0, N, batch_size)
         batches = np.array_split(ids, idx[1:])
@@ -72,6 +158,26 @@ class SDSS(Instrument):
 
     @classmethod
     def get_spectrum(cls, dir, plate, mjd, fiberid, return_file=False):
+        """Download and prepare spectrum for analysis
+
+        Parameters
+        ----------
+        dir: string
+            Root directory for data storage
+        plate: int
+            SDSS plate number
+        mjd: int
+            SDSS Modified Julian Date of the night when the spectrum was observed
+        fiberid: int
+            Fiber number on SDSS plate
+        return_file: bool
+            Whether to return the local file name or the prepared spectrum
+
+        Returns
+        -------
+        Either the local file name or the prepared spectrum
+        """
+
         filename = "spec-%s-%i-%s.fits" % (str(plate).zfill(4), mjd, str(fiberid).zfill(4))
         classname = cls.__mro__[0].__name__.lower()
         dirname = os.path.join(dir, f"{classname}-spectra")
@@ -88,6 +194,25 @@ class SDSS(Instrument):
 
     @classmethod
     def get_image(cls, dir, plate, mjd, fiberid, return_file=False):
+        """Download image cutout for spectrum target
+
+        Parameters
+        ----------
+        dir: string
+            Root directory for data storage
+        plate: int
+            SDSS plate number
+        mjd: int
+            SDSS Modified Julian Date of the night when the spectrum was observed
+        fiberid: int
+            Fiber number on SDSS plate
+        return_file: bool
+            Whether to return the local file name or actual image
+
+        Returns
+        -------
+        Either the local file name or :class:`IPython.display.Image`
+        """
         filename = "im-%s-%i-%s.jpeg" % (str(plate).zfill(4), mjd, str(fiberid).zfill(4))
         dirname = os.path.join(dir, "sdss-images")
         flocal = os.path.join(dirname, filename)
@@ -115,6 +240,42 @@ class SDSS(Instrument):
 
     @classmethod
     def prepare_spectrum(cls, filename):
+        """Prepare spectrum for analysis
+
+        This method creates an extended mask, using the original SDSS `and_mask` and
+        the skyline mask of the instrument. The weights for all masked regions is set to
+        0, but the spectrum itself is not altered.
+
+        The spectrum and weights are then cast into a fixed-format data vector, which
+        standardizes the variable wavelengths of each observation.
+
+        A normalization is computed as the median flux in the relatively flat region
+        between 5300 and 5850 A. The spectrum is divided by this factor, the weights
+        are muliplied with the square of this factor.
+
+        Redshift estimate and errors as determined by the SDSS pipeline are read from
+        the file headers.
+
+        Parameter
+        ---------
+        filename: string
+            Path to local file containing the spetrum
+
+        Returns
+        -------
+        spec: `torch.tensor`, shape (L, )
+            Normalized spectrum
+        w: `torch.tensor`, shape (L, )
+            Inverse variance weights of normalized spectrum
+        z: `torch.tensor`, shape (1, )
+            Redshift from SDSS pipeline
+        id: `torch.tensor`, shape (3, )
+            SDSS plate, mjd, fiberid triple
+        norm: `torch.tensor`, shape (1, )
+            Normalization factor
+        zerr: torch.tensor`, shape (1, )
+            Redshift error from SDSS pipeline
+        """
         hdulist = fits.open(filename)
         data = hdulist[1].data
         loglam = data['loglam']
@@ -163,6 +324,31 @@ class SDSS(Instrument):
 
     @classmethod
     def make_batch(cls, dir, ids):
+        """Make a batch of spectra from their IDs
+
+        Parameters
+        ----------
+        dir: string
+            Root directory for data storage
+        ids: list of (plate, mjd, fiberid)
+            Identifier of spectrum
+
+        Returns
+        -------
+        spec: `torch.tensor`, shape (N, L)
+            Normalized spectrum
+        w: `torch.tensor`, shape (N, L)
+            Inverse variance weights of normalized spectrum
+        z: `torch.tensor`, shape (N, )
+            Redshift from SDSS pipeline
+        id: `torch.tensor`, shape (N, 3)
+            SDSS plate, mjd, fiberid triple
+        norm: `torch.tensor`, shape (N, )
+            Normalization factor
+        zerr: torch.tensor`, shape (N, )
+            Redshift error from SDSS pipeline
+        """
+
         files = [ cls.get_spectrum(dir, plate, mjd, fiberid, return_file=True) for plate, mjd, fiberid in ids ]
         N = len(files)
         L = len(cls._wave_obs)
@@ -178,6 +364,24 @@ class SDSS(Instrument):
 
     @classmethod
     def get_ids(cls, dir, selection_fct=None):
+        """Select IDs from main specrum table that matches `selection_fct`
+
+        NOTE: This function will download the file `specObj-dr16.fits` from the data
+        archive. This file is *not* small...
+
+        Parameters
+        ----------
+        dir: string
+            Root directory for data storage
+        selection_fct: callable
+            Function to select matches from all items in the main table
+
+        Returns
+        -------
+        ids: `torch.tensor`, shape (N, 3)
+            SDSS plate, mjd, fiberid triple
+
+        """
         main_file = os.path.join(dir, "specObj-dr16.fits")
         if not os.path.isfile(main_file):
             url = "https://data.sdss.org/sas/dr16/sdss/spectro/redux/specObj-dr16.fits"
@@ -207,6 +411,28 @@ class SDSS(Instrument):
 
     @classmethod
     def augment_spectra(cls, batch, redshift=True, noise=True, mask=True, ratio=0.05):
+        """Augment spectra for greater diversity
+
+        Parameters
+        ----------
+        batch: `torch.tensor`, shape (N, L)
+            Spectrum batch
+        redshift: bool
+            Modify redshift by up to 0.2 (keeping it within 0...0.5)
+        noise: bool
+            Whether to add noise to the spectrum (up to 0.2*max(spectrum))
+        mask: bool
+            Whether to block out a fraction (given by `ratio`) of the spectrum
+
+        Returns
+        -------
+        spec: `torch.tensor`, shape (N, L)
+            Altered spectrum
+        w: `torch.tensor`, shape (N, L)
+            Altered inverse variance weights of spectrum
+        z: `torch.tensor`, shape (N, )
+            Altered redshift
+        """
         spec, w, z = batch[:3]
         batch_size, spec_size = spec.shape
         device = spec.device
@@ -253,6 +479,11 @@ class SDSS(Instrument):
 
 
 class BOSS(SDSS):
+    """BOSS instrument
+
+    This is a variant of :class:`SDSS` with a different observed wavelength vector and
+    data archive URL.
+    """
     _wave_obs = 10**torch.arange(3.549, 4.0175, 0.0001)
     _skyline_mask = get_skyline_mask(_wave_obs)
     _base_url = "https://data.sdss.org/sas/dr16/eboss/spectro/redux/v5_13_0/spectra/lite/"

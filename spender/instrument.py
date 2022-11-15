@@ -4,6 +4,22 @@ from torch import nn
 from torchinterp1d import Interp1d
 
 class BaseInstrument(nn.Module):
+    """Base class for instruments
+
+    Container for wavelength vector, LSF and calibration functions.
+
+    CAUTION:
+    Don't base concrete implementations on this class, use :class:`Instrument` instead!
+
+    Parameters
+    ----------
+    wave_obs: `torch.tensor`
+        Observed wavelengths
+    lsf: :class:`LSF`
+        (optional) Line spread function model
+    calibration: callable
+        (optional) function to calibrate the observed spectrum
+    """
     def __init__(self,
                  wave_obs,
                  lsf=None,
@@ -40,6 +56,25 @@ class LSF(nn.Conv1d):
         return super(LSF, self).forward(x) / self.weight.sum()
 
 def get_skyline_mask(wave_obs, min_intensity=2, mask_size=5):
+    """Return vector that masks the major skylines
+
+    For ever line in the skyline list in the file `data/sky-lines.txt` that is brighter
+    than a threshold, this method creates a mask whose size scales logarithmically with
+    line brightness.
+
+    Parameter
+    ---------
+    wave_obs: `torch.tensor`
+        Observed wavelengths
+    min_intensity: float
+        Intensity threshold
+    mask_size: float
+        Number of spectral elements to mask on either side of the line. This number
+        is the minmum size for lines with `min_intensity`.
+    Returns
+    -------
+    mask, `torch.tensor` of dtype `bool` with same shape as `wave_obs`
+    """
     this_dir, this_filename = os.path.split(__file__)
     filename = os.path.join(this_dir, "data", "sky-lines.txt")
     skylines = np.genfromtxt(filename, names=['wavelength', 'intensity', 'name', 'status'], dtype=None, encoding=None)
@@ -61,6 +96,7 @@ def register_class(target_class):
     instrument_register[target_class.__name__] = target_class
 
 class Meta(type):
+    """Meta class to enable registration of instruments"""
     def __new__(meta, name, bases, class_dict):
         cls = type.__new__(meta, name, bases, class_dict)
         # remove those that are directly derived from the base class
@@ -69,4 +105,11 @@ class Meta(type):
         return cls
 
 class Instrument(BaseInstrument, metaclass=Meta):
+    """Instrument class
+
+    Container for wavelength vector, LSF and calibration functions.
+
+    See `spender.instrument.instrument_register` for all known classes that derive from
+    :class:`Instrument`.
+    """
     pass

@@ -23,9 +23,30 @@ def load_batch(batch_name, subset=None):
         return batch[subset]
     return batch
 
-# based on https://medium.com/speechmatics/how-to-build-a-streaming-dataloader-with-pytorch-a66dd891d9dd
 class BatchedFilesDataset(IterableDataset):
+    """Creates a dataset from a list of batched files
 
+    This class allows the use of batched files, whose size can be optimized for loading
+    performance, as input for a :class:`torch.utils.data.DataLoader`, whose batch size
+    can be chosen indepdently to optimize training.
+
+    See https://medium.com/speechmatics/how-to-build-a-streaming-dataloader-with-pytorch-a66dd891d9dd
+    for details.
+
+    The file list and the items in each loaded file can be shuffled if desired.
+
+    Parameters
+    ----------
+    file_list: list(str)
+        List of filenames to load batches from
+    load_fct: callable
+        Function to return batch when given filename
+    shuffle: bool
+        Whether to shuffle the order of the batch files
+    shuffle_instance: bool
+        Whether to shuffle spectra within each batch
+
+    """
     def __init__(self, file_list, load_fct, shuffle=False, shuffle_instance=False):
         assert len(file_list), "File list cannot be empty"
         self.file_list = file_list

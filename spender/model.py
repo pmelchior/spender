@@ -3,8 +3,26 @@ import torch
 from torch import nn
 from torchinterp1d import Interp1d
 
-#### Simple MLP ####
 class MLP(nn.Sequential):
+    """Multi-Layer Perceptron
+
+    A simple implementation with a configurable number of hidden layers and
+    activation functions.
+
+    Parameters
+    ----------
+    n_in: int
+        Input dimension
+    n_out: int
+        Output dimension
+    n_hidden: list of int
+        Dimensions for every hidden layer
+    act: list of callables
+        Activation functions after every layer. Needs to have len(n_hidden) + 1
+        If `None`, will be set to `LeakyReLU` for every layer.
+    dropout: float
+        Dropout probability
+    """
     def __init__(self,
                  n_in,
                  n_out,
@@ -25,25 +43,71 @@ class MLP(nn.Sequential):
 
         super(MLP, self).__init__(*layer)
 
-#### Speculator activation function ####
-#### from Alsing+ 2020              ####
+
 class SpeculatorActivation(nn.Module):
-    def __init__(self, num_parameters, plus_one=False):
+    """Activation function from the Speculator paper
+
+    .. math:
+
+        a(\mathbf{x}) = \left[\boldsymbol{\gamma} + (1+e^{-\boldsymbol\beta\odot\mathbf{x}})^{-1}(1-\boldsymbol{\gamma})\right]\odot\mathbf{x}
+
+    Paper: Alsing et al., 2020, ApJS, 249, 5
+
+    Parameters
+    ----------
+    n_parameter: int
+        Number of parameters for the activation function to act on
+    plus_one: bool
+        Whether to add 1 to the output
+    """
+    def __init__(self, n_parameter, plus_one=False):
         super().__init__()
         self.plus_one = plus_one
-        self.beta = nn.Parameter(torch.randn(num_parameters), requires_grad=True)
-        self.gamma = nn.Parameter(torch.randn(num_parameters), requires_grad=True)
+        self.beta = nn.Parameter(torch.randn(n_parameter), requires_grad=True)
+        self.gamma = nn.Parameter(torch.randn(n_parameter), requires_grad=True)
 
     def forward(self, x):
+        """Forward method
+
+        Parameters
+        ----------
+        x: `torch.tensor`
+
+        Returns
+        -------
+        x': `torch.tensor`, same shape as `x`
+        """
         # eq 8 in Alsing+2020
         x = (self.gamma + (1 - self.gamma) * torch.sigmoid(self.beta * x)) * x
         if self.plus_one:
             return x + 1
         return x
 
-#### Spectrum encoder    ####
-#### based on Serra 2018 ####
 class SpectrumEncoder(nn.Module):
+    """Spectrum encoder
+
+    Modified version of the encoder by Serrà et al. (2018), which combines a 3 layer CNN
+    with a dot-product attention module. This encoder adds a MLP to further compress the
+    attended values into a low-dimensional latent space.
+
+    Paper: Serrà et al., https://arxiv.org/abs/1805.03908
+
+    Parameters
+    ----------
+    instrument: :class:`spender.Instrument`
+        Instrument that observed the data
+    n_latent: int
+        Dimension of latent space
+    n_hidden: list of int
+        Dimensions for every hidden layer of the :class:`MLP`
+    act: list of callables
+        Activation functions after every layer. Needs to have len(n_hidden) + 1
+        If `None`, will be set to `LeakyReLU` for every layer.
+    n_aux: int
+        Dimensions of auxiliary inputs for the :class:`MLP`
+    dropout: float
+        Dropout probability
+    """
     def __init__(self,
                  instrument,
                  n_latent,
@@ -104,9 +168,23 @@ class SpectrumEncoder(nn.Module):
 
         return h, a
 
-    def forward(self, x, aux=None):
+    def forward(self, y, aux=None):
+        """Forward method
+
+        Parameters
+        ----------
+        y: `torch.tensor`, shape (N, L)
+            Batch of observed spectra
+        aux: `torch.tensor`, shape (N, n_aux)
+            (optional) Batch of auxiliary inputs to MLP
+
+        Returns
+        -------
+        s: `torch.tensor`, shape (N, n_latent)
+            Batch of latents that encode `spectra`
+        """
         # run through CNNs
-        h, a = self._downsample(x)
+        h, a = self._downsample(y)
         # softmax attention
         a = self.softmax(a)
 
@@ -126,6 +204,7 @@ class SpectrumEncoder(nn.Module):
 
     @property
     def n_parameters(self):
+        """Number of parameters in this model"""
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
     def _attention_hook(self, grad):
@@ -133,15 +212,41 @@ class SpectrumEncoder(nn.Module):
 
     @property
     def attention_grad(self):
+        """Gradient of the attention weights
+
+        Factor to compute the importance of attention for Grad-FAM method.
+
+        Requires a previous `loss.backward` call for any scalar loss function based on
+        outputs of this classes `forward` method. This functionality is switched off
+        during training.
+        """
         if hasattr(self, '_attention_grad'):
             return self._attention_grad
         else:
             return None
 
 
-#### Spectrum decoder ####
-#### Simple MLP but with explicit redshift and instrument path ####
 class SpectrumDecoder(nn.Module):
+    """Spectrum decoder
+
+    Simple :class:`MLP` to create a restframe spectrum from a latent vector,
+    followed by explicit redshifting, resampling, and convolution transformations to
+    match the observations from a given instrument.
+
+    Parameter
+    ---------
+    wave_rest: `torch.tensor`
+        Restframe wavelengths
+    n_latent: int
+        Dimension of latent space
+    n_hidden: list of int
+        Dimensions for every hidden layer of the :class:`MLP`
+    act: list of callables
+        Activation functions after every layer. Needs to have len(n_hidden) + 1
+        If `None`, will be set to `LeakyReLU` for every layer.
+    dropout: float
+        Dropout probability
+    """
     def __init__(self,
                  wave_rest,
                  n_latent=5,
@@ -166,9 +271,37 @@ class SpectrumDecoder(nn.Module):
         self.register_buffer('wave_rest', wave_rest)
 
     def decode(self, s):
+        """Decode latents into restframe spectrum
+
+        Parameter
+        ---------
+        s: `torch.tensor`, shape (N, S)
+            Batch of latents
+
+        Returns
+        -------
+        x: `torch.tensor`, shape (N, L)
+            Batch of restframe spectra
+        """
         return self.mlp.forward(s)
 
     def forward(self, s, instrument=None, z=None):
+        """Forward method
+
+        Parameter
+        ---------
+        s: `torch.tensor`, shape (N, S)
+            Batch of latents
+        instrument: :class:`spender.Instrument`
+            Instrument to generate spectrum for
+        z: `torch.tensor`, shape (N, 1)
+            Redshifts for each spectrum
+
+        Returns
+        -------
+        y: `torch.tensor`, shape (N, L)
+            Batch of spectra at redshift `z` as observed by `instrument`
+        """
         # restframe
         spectrum = self.decode(s)
         # observed frame
@@ -176,7 +309,23 @@ class SpectrumDecoder(nn.Module):
             spectrum = self.transform(spectrum, instrument=instrument, z=z)
         return spectrum
 
-    def transform(self, spectrum_restframe, instrument=None, z=0):
+    def transform(self, x, instrument=None, z=0):
+        """Transformations from restframe to observed frame
+
+        Parameter
+        ---------
+        x: `torch.tensor`, shape (N, S)
+            Batch of restframe spectra
+        instrument: :class:`spender.Instrument`
+            Instrument to generate spectrum for
+        z: `torch.tensor`, shape (N, 1)
+            Redshifts for each spectrum
+
+        Returns
+        -------
+        y: `torch.tensor`, shape (N, L)
+            Batch of spectra at redshift `z` as observed by `instrument`
+        """
         wave_redshifted = (self.wave_rest.unsqueeze(1) * (1 + z)).T
 
         if instrument in [False, None]:
@@ -184,7 +333,7 @@ class SpectrumDecoder(nn.Module):
         else:
             wave_obs = instrument.wave_obs
 
-        spectrum = Interp1d()(wave_redshifted, spectrum_restframe, wave_obs)
+        spectrum = Interp1d()(wave_redshifted, x, wave_obs)
 
         # convolve with LSF
         if instrument.lsf is not None:
@@ -198,11 +347,27 @@ class SpectrumDecoder(nn.Module):
 
     @property
     def n_parameters(self):
+        """Number of parameters in this model"""
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
 
-# Combine spectrum encoder and decoder
 class BaseAutoencoder(nn.Module):
+    """Base class for spectrum autoencoder
+
+    This class is agnostic about the encoder and decoder architectures. It simply calls
+    them in order and computes the loss for the recontruction fidelity.
+
+    The only requirements for the modules is that they have the same latent
+    dimensionality, and for the `loss` method the length of the observed spectrum
+    vectors need to agree.
+
+    Parameter
+    ---------
+    encoder: `nn.Module`
+        Encoder
+    decoder: `nn.Module`
+        Decoder
+    """
     def __init__(self,
                  encoder,
                  decoder,
@@ -213,41 +378,114 @@ class BaseAutoencoder(nn.Module):
         self.encoder = encoder
         self.decoder = decoder
 
-    def encode(self, x, aux=None):
-        return self.encoder(x, aux=aux)
+    def encode(self, y, aux=None):
+        """Encode from observed spectrum to latents
 
-    def decode(self, x):
-        return self.decoder(x)
+        Parameters
+        ----------
+        y: `torch.tensor`, shape (N, L)
+            Batch of observed spectra
+        aux: `torch.tensor`, shape (N, n_aux)
+            (optional) Batch of auxiliary inputs to MLP
+        Returns
+        -------
+        s: `torch.tensor`, shape (N, n_latent)
+            Batch of latents that encode `spectra`
+        """
+        return self.encoder(y, aux=aux)
 
-    def _forward(self, x, w=None, instrument=None, z=None, s=None, aux=None):
+    def decode(self, s):
+        """Decode latents into restframe spectrum
+
+        Parameter
+        ---------
+        s: `torch.tensor`, shape (N, S)
+            Batch of latents
+
+        Returns
+        -------
+        x: `torch.tensor`, shape (N, L)
+            Batch of restframe spectra
+        """
+        return self.decoder(s)
+
+    def _forward(self, y, instrument=None, z=None, s=None, aux=None):
         if s is None:
             if aux is None and z is not None:
                 aux = z.unsqueeze(1)
-            s = self.encode(x, aux=aux)
+            s = self.encode(y, aux=aux)
         if instrument is None:
             instrument = self.encoder.instrument
 
-        spectrum_restframe = self.decode(s)
-        spectrum_observed = self.decoder.transform(spectrum_restframe, instrument=instrument, z=z)
+        x = self.decode(s)
+        y = self.decoder.transform(x, instrument=instrument, z=z)
 
-        return s, spectrum_restframe, spectrum_observed
+        return s, x, y
 
-    def forward(self, x, w=None, instrument=None, z=None, s=None, aux=None):
-        s, spectrum_restframe, spectrum_observed = self._forward(x, w=w, instrument=instrument, z=z, s=s, aux=aux)
-        return spectrum_observed
+    def forward(self, y, instrument=None, z=None, s=None, aux=None):
+        """Forward method
 
-    def loss(self, x, w, instrument=None, z=None, s=None, aux=None, individual=False):
-        spectrum_observed = self.forward(x, instrument=instrument, z=z, s=s, aux=aux)
-        return self._loss(x, w, spectrum_observed, individual=individual)
+        Transforms observed spectra into their reconstruction for a given intrument
+        and redshift.
 
-    def _loss(self, x, w, spectrum_observed, individual=False):
+        Parameter
+        ---------
+        y: `torch.tensor`, shape (N, L)
+            Batch of observed spectra
+        instrument: :class:`spender.Instrument`
+            Instrument to generate spectrum for
+        z: `torch.tensor`, shape (N, 1)
+            Redshifts for each spectrum. When given, `aux` is ignored.
+        s: `torch.tensor`, shape (N, S)
+            (optional) Batch of latents. When given, encoding is omitted and these
+            latents are used instead.
+        aux: `torch.tensor`, shape (N, n_aux)
+            (optional) Batch of auxiliary inputs to encoder MLP
+
+        Returns
+        -------
+        y: `torch.tensor`, shape (N, L)
+            Batch of spectra at redshift `z` as observed by `instrument`
+        """
+        s, x, y_ = self._forward(y, instrument=instrument, z=z, s=s, aux=aux)
+        return y_
+
+    def loss(self, y, w, instrument=None, z=None, s=None, aux=None, individual=False):
+        """Weighted MSE loss
+
+        Parameter
+        --------
+        y: `torch.tensor`, shape (N, L)
+            Batch of observed spectra
+        w: `torch.tensor`, shape (N, L)
+            Batch of weights for observed spectra
+        instrument: :class:`spender.Instrument`
+            Instrument to generate spectrum for
+        z: `torch.tensor`, shape (N, 1)
+            Redshifts for each spectrum. When given, `aux` is ignored.
+        s: `torch.tensor`, shape (N, S)
+            (optional) Batch of latents. When given, encoding is omitted and these
+            latents are used instead.
+        aux: `torch.tensor`, shape (N, n_aux)
+            (optional) Batch of auxiliary inputs to encoder MLP
+        individual: bool
+            Whether the loss is computed for each spectrum individually or aggregated
+
+        Returns
+        -------
+        float or `torch.tensor`, shape (N,) of weighted MSE loss
+        """
+        y_ = self.forward(y, instrument=instrument, z=z, s=s, aux=aux)
+        return self._loss(y, w, y_, individual=individual)
+
+    def _loss(self, y, w, y_, individual=False):
         # loss = total squared deviation in units of variance
         # if the model is identical to observed spectrum (up to the noise),
         # then loss per object = D (number of non-zero bins)
 
         # to make it to order unity for comparing losses, divide out L (number of bins)
         # instead of D, so that spectra with more valid bins have larger impact
-        loss_ind = torch.sum(0.5 * w * (x - spectrum_observed).pow(2), dim=1) / x.shape[1]
+        loss_ind = torch.sum(0.5 * w * (y - y_).pow(2), dim=1) / y.shape[1]
 
         if individual:
             return loss_ind
@@ -256,17 +494,43 @@ class BaseAutoencoder(nn.Module):
 
     @property
     def n_parameter(self):
+        """Number of parameters in this model"""
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
     @property
     def wave_obs(self):
+        """Observed wavelengths used by the encoder"""
         return self.encoder.instrument.wave_obs
 
     @property
     def wave_rest(self):
+        """Resframe wavelengths used by the decoder"""
         return self.decoder.wave_rest
 
+
 class SpectrumAutoencoder(BaseAutoencoder):
+    """Concrete implementation of spectrum encoder
+
+    Constructs and uses :class:`SpectrumEncoder` as encoder and :class:`SpectrumDecoder`
+    as decoder.
+
+    Parameter
+    ---------
+    instrument: :class:`spender.Instrument`
+        Observing instrument
+    wave_rest: `torch.tensor`
+        Restframe wavelengths
+    n_latent: int
+        Dimension of latent space
+    n_aux: int
+        Dimensions of auxiliary inputs for the encoder :class:`MLP`. Set to 1 to use the
+        redshift as auxiliary.
+    n_hidden: list of int
+        Dimensions for every hidden layer of the decoder :class:`MLP`
+    act: list of callables
+        Activation functions for the decoder. Needs to have len(n_hidden) + 1
+        If `None`, will be set to `LeakyReLU` for every layer.
+    """
     def __init__(self,
                  instrument,
                  wave_rest,

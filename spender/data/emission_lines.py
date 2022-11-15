@@ -1,3 +1,5 @@
+# from https://classic.sdss.org/dr6/algorithms/linestable.html
+
 emissionlines = {
 1033.82: "O VI",
 1215.24: "Lyα",
@@ -16,7 +18,7 @@ emissionlines = {
 2799.117: "Mg II",
 3346.79: "Ne V",
 3426.85: "Ne VI",
-3727.092: "", #"O II",
+3727.092: "O II",
 3729.875: "O II",
 3889.0: "He I",
 4072.3: "S II",
@@ -43,11 +45,9 @@ absorptionlines = {
 4305.61: "G",
 5176.7: "Mg",
 5895.6: "Na",
-# 6496.9: "Ba II",
 8500.36: "Ca II",
 8544.44: "Ca II",
 8664.52: "Ca II",
 }
 
-skylines = [5578.5, 5894.6, 6301.7, 7246.0]
 lines = {**emissionlines, **absorptionlines}
