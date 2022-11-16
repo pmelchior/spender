@@ -23,7 +23,7 @@ def load_model(filename, instrument, device=None):
         Traning and validation loss for this model
     """
     assert isinstance(instrument, Instrument)
-    model_struct = torch.load(model_file, map_location=device)
+    model_struct = torch.load(filename, map_location=device)
 
     # check if LSF is contained in model_struct
     try:
