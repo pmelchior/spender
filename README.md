@@ -2,6 +2,8 @@
 
 _Neural spectrum encoder and decoder_
 
+Paper: https://arxiv.org/abs/2211.07890
+
 From a data-driven side, galaxy spectra have two fundamental degrees of freedom: their instrinsic spectral properties (or type, if you believe in such a thing) and their redshift. The latter makes them awkward to ingest because it stretches everything, which means spectral features don't appear at the same places. This is why most analyses of the intrinsic properties are done by transforming the observed spectrum to restframe.
 
 We decided to do the opposite. We build a custom architecture, which describes the restframe spectrum by an autoencoder and transforms the restframe model to the observed redshift. While we're at it we also match the spectral resolution and line spread function of the instrument:
@@ -12,3 +14,45 @@ Doing so clearly separates the responsibilities in the architecture. Spender est
 ## Installation
 
 The easiest way is `pip install spender`. When installing from the code repo, run `pip install -e .`.
+
+For the time being, you will have to install one dependency manually: `torchinterp1d` is available [here](https://github.com/aliutkus/torchinterp1d).
+
+## Use
+
+Documentation and tutorials are forthcoming. In the meantime, check out `train/diagnostics.ipynb` for a worked through example that generates the figures from the paper.
+
+In short, you can run spender like this:
+```python
+import spender
+from spender.data import SDSS
+
+# create the instrument
+sdss = SDSS()
+
+# load the model
+model, loss = spender.load_model(model_file, sdss)
+
+# get some SDSS spectra from the ids
+data_path = "./DATA"
+ids = ((412, 52254, 308), (412, 52250, 129))
+spec, w, z, ids, norm, zerr = SDSS.make_batch(data_path, ids)
+
+# run spender end-to-end
+with torch.no_grad():
+  spec_reco = model(spec, instrument=sdss, z=z)
+
+# for more fine-grained control, run spender's internal _forward method
+# which return the latents s, the model for the restframe and the observed spectrum
+with torch.no_grad():
+  s, spec_rest, spec_reco = model._forward(spec, instrument=sdss, z=z)
+
+# to only encode into latents, using redshift as extra input
+with torch.no_grad():
+  s = model.encode(spec, aux=z.unsqueeze(1))
+```
+
+Plotting the results of the above nicely shows what spender can do:
+
+![examples_2](https://user-images.githubusercontent.com/1463403/202062952-4a27dacf-2733-47d9-a9ca-e5b3387961e2.png)
+
+Noteworthy aspects: The restframe model has an extended wavelength range, e.g. predicting the [O II] doublet that was not observed in the first example, and being unaffected by glitches like the skyline residuals at about 5840 A in the second example.
