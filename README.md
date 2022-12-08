@@ -17,6 +17,12 @@ The easiest way is `pip install spender`. When installing from the code repo, ru
 
 For the time being, you will have to install one dependency manually: `torchinterp1d` is available [here](https://github.com/aliutkus/torchinterp1d).
 
+## Pretrained models
+
+We make the best-fitting models discussed in the paper available:
+* [standard resolution](https://www.dropbox.com/s/6o5htaic8wimito/sdss.speculator%2B1.variable.lr_1e-3.latent_10.0.pt?dl=0) (S=10, R=5881)
+* [super-resolution](https://www.dropbox.com/s/d14f1jryelxc5if/sdss.speculator%2B1.variable.superres.lsf_5.lr_1e-3.latent_8.0.pt?dl=0) (S=8, R=11762)
+
 ## Use
 
 Documentation and tutorials are forthcoming. In the meantime, check out `train/diagnostics.ipynb` for a worked through example that generates the figures from the paper.
