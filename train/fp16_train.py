@@ -146,12 +146,14 @@ def _losses(model,
             batch,
             similarity=True,
             slope=0,
+            skip=False
            ):
 
     spec, w, z = batch
 
     # need the latents later on if similarity=True
     s = model.encode(spec, aux=z.unsqueeze(1))
+    if skip: return 0,0,s
     loss = model.loss(spec, w, instrument, z=z, s=s)
 
     if similarity:
@@ -166,15 +168,14 @@ def get_losses(model,
                aug_fct=None,
                similarity=True,
                consistency=True,
-               slope=0,
-               mask_skyline=True,
+               slope=0
                ):
 
-    loss, sim_loss, s = _losses(model, instrument, batch, similarity=similarity, slope=slope, mask_skyline=mask_skyline)
+    loss, sim_loss, s = _losses(model, instrument, batch, similarity=similarity, slope=slope)
 
     if aug_fct is not None:
         batch_copy = aug_fct(batch)
-        loss_, sim_loss_, s_ = _losses(model, instrument, batch_copy, similarity=similarity, slope=slope, mask_skyline=mask_skyline)
+        loss_, sim_loss_, s_ = _losses(model, instrument, batch_copy, similarity=similarity, slope=slope,skip=True)
     else:
         loss_ = sim_loss_ = 0
 

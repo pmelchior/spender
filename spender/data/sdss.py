@@ -228,7 +228,7 @@ class SDSS(Instrument):
         if redshift:
             if z_new == None:
                 # uniform distribution of redshift offsets, width = z_lim
-                z_lim = 0.2
+                z_lim = 0.5
                 z_base = torch.relu(z-z_lim)
                 z_new = z_base+z_lim*(torch.rand(batch_size, device=device))
             # keep redshifts between 0 and 0.5

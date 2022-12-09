@@ -40,7 +40,7 @@ class LSF(nn.Conv1d):
         return super(LSF, self).forward(x) / self.weight.sum()
 
 def get_skyline_mask(wave_obs, min_intensity=2, mask_size=5):
-    filename = '../spender/data/sky-lines.txt'
+    filename = './spender/data/sky-lines.txt'
     skylines = np.genfromtxt(filename, names=['wavelength', 'intensity', 'name', 'status'], dtype=None, encoding=None)
     # wavelength in nm, need A
     skylines['wavelength'] *= 10
