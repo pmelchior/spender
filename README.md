@@ -30,7 +30,7 @@ Documentation and tutorials are forthcoming. In the meantime, check out `train/d
 In short, you can run spender like this:
 ```python
 import spender
-from spender.data import SDSS
+from spender.data.sdss import SDSS
 
 # create the instrument
 sdss = SDSS()
