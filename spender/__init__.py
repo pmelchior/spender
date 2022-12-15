@@ -1,6 +1,8 @@
 import torch
-from .model import MLP, SpeculatorActivation, SpectrumEncoder, SpectrumDecoder, SpectrumAutoencoder
-from .instrument import Instrument, LSF
+
+from .instrument import LSF, Instrument
+from .model import (MLP, SpectrumAutoencoder, SpectrumDecoder, SpectrumEncoder,
+                    SpeculatorActivation)
 
 
 def load_model(filename, instrument, device=None):
@@ -27,32 +29,37 @@ def load_model(filename, instrument, device=None):
 
     # check if LSF is contained in model_struct
     try:
-        kernel = model_struct['model']['encoder.instrument.lsf.weight'].flatten()
+        kernel = model_struct["model"]["encoder.instrument.lsf.weight"].flatten()
         lsf = LSF(kernel)
         instrument.lsf = lsf
     except KeyError:
         pass
 
-    wave_rest = model_struct['model']['decoder.wave_rest']
-    n_latent = model_struct['model']['decoder.mlp.0.weight'].shape[1]
+    wave_rest = model_struct["model"]["decoder.wave_rest"]
+    n_latent = model_struct["model"]["decoder.mlp.0.weight"].shape[1]
 
     model = SpectrumAutoencoder(
-                instrument,
-                wave_rest,
-                n_latent=n_latent,
+        instrument,
+        wave_rest,
+        n_latent=n_latent,
     )
 
     # backwards compat: encoder.mlp instead of encoder.mlp.mlp
-    if 'encoder.mlp.mlp.0.weight' in model_struct['model'].keys():
+    if "encoder.mlp.mlp.0.weight" in model_struct["model"].keys():
         from collections import OrderedDict
-        model_struct['model'] = OrderedDict([(k.replace('mlp.mlp', 'mlp'), v) for k, v in model_struct['model'].items()])
+
+        model_struct["model"] = OrderedDict(
+            [(k.replace("mlp.mlp", "mlp"), v) for k, v in model_struct["model"].items()]
+        )
     # backwards compat: add instrument to encoder
     try:
-        model.load_state_dict(model_struct['model'], strict=False)
+        model.load_state_dict(model_struct["model"], strict=False)
     except RuntimeError:
-        model_struct['model']['encoder.instrument.wave_obs']= instrument.wave_obs
-        model_struct['model']['encoder.instrument.skyline_mask']= instrument._skyline_mask
-        model.load_state_dict(model_struct['model'], strict=False)
+        model_struct["model"]["encoder.instrument.wave_obs"] = instrument.wave_obs
+        model_struct["model"][
+            "encoder.instrument.skyline_mask"
+        ] = instrument._skyline_mask
+        model.load_state_dict(model_struct["model"], strict=False)
 
-    loss = torch.tensor(model_struct['losses'])
+    loss = torch.tensor(model_struct["losses"])
     return model, loss

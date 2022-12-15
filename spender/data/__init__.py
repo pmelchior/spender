@@ -1,1 +1,1 @@
-from .sdss import SDSS, BOSS
+from .sdss import BOSS, SDSS

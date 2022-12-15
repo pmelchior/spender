@@ -1,11 +1,13 @@
 #!/usr/bin/env python
 
-import argparse, os
+import argparse
+import os
+
 import numpy as np
 import torch
-from torch import nn
-from torch import optim
 from accelerate import Accelerator
+from torch import nn, optim
+
 from spender import SpectrumAutoencoder, SpeculatorActivation
 from spender.data.sdss import SDSS
 
