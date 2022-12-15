@@ -2,7 +2,7 @@ import glob, os, urllib.request
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
-from torchinterp1d import Interp1d
+from torchinterp1d import interp1d
 import astropy.io.fits as fits
 import astropy.table as aTable
 from functools import partial
@@ -449,12 +449,12 @@ class SDSS(Instrument):
             wave_redshifted = (wave_obs.unsqueeze(1) * zfactor).T
 
             # redshift linear interpolation
-            spec_new = Interp1d()(wave_redshifted, spec, wave_obs)
+            spec_new = interp1d(wave_redshifted, spec, wave_obs)
             # ensure extrapolated values have zero weights
             w_new = torch.clone(w)
             w_new[:,0] = 0
             w_new[:,-1] = 0
-            w_new = Interp1d()(wave_redshifted, w_new, wave_obs)
+            w_new = interp1d(wave_redshifted, w_new, wave_obs)
             w_new = torch.nn.functional.relu(w_new)
         else:
             spec_new, w_new, z_new = torch.clone(spec), torch.clone(w), z

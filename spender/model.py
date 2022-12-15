@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 from torch import nn
-from torchinterp1d import Interp1d
+from torchinterp1d import interp1d
 
 class MLP(nn.Sequential):
     """Multi-Layer Perceptron
@@ -337,7 +337,7 @@ class SpectrumDecoder(nn.Module):
         else:
             wave_obs = instrument.wave_obs
 
-        spectrum = Interp1d()(wave_redshifted, x, wave_obs)
+        spectrum = interp1d(wave_redshifted, x, wave_obs)
 
         # convolve with LSF
         if instrument.lsf is not None:

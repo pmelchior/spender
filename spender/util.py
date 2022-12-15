@@ -3,7 +3,7 @@ import torch.nn.functional as F
 from torch.utils.data import IterableDataset
 from itertools import chain
 import pickle, humanize, psutil, GPUtil, io, random
-from torchinterp1d import Interp1d
+from torchinterp1d import interp1d
 
 ############ Functions for creating batched files ###############
 class CPU_Unpickler(pickle.Unpickler):
@@ -90,8 +90,8 @@ def resample_to_restframe(wave_obs,wave_rest,y,w,z):
     wave_z = (wave_rest.unsqueeze(1)*(1 + z)).T
     wave_obs = wave_obs.repeat(y.shape[0],1)
     # resample observed spectra to restframe
-    yrest = Interp1d()(wave_obs, y, wave_z)
-    wrest =  Interp1d()(wave_obs, w, wave_z)
+    yrest = interp1d(wave_obs, y, wave_z)
+    wrest =  interp1d(wave_obs, w, wave_z)
 
     # interpolation = extrapolation outside of observed region, need to mask
     msk = (wave_z<=wave_obs.min())|(wave_z>=wave_obs.max())
