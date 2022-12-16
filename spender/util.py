@@ -44,11 +44,12 @@ def interp1d(x, y, target):
     assert (
         x.shape[0] == y.shape[0] or y.shape[0] == 1
     ), f"x and y must have same length, or y must have length 1, got {x.shape} and {y.shape}"
-    broadcast = y.shape[0] == 1 and x.shape[0] > 1
+    if y.shape[0] == 1 and x.shape[0] > 1:  # broadcast
+        y = y.expand(x.shape[0], -1)
     bs = x.shape[0]
     itp = torch.zeros(bs, target.shape[-1], device=y.device)
     for i in range(bs):
-        itp[i] = interp1d_single(x[i], y[0 if broadcast else i], target)
+        itp[i] = interp1d_single(x[i], y[i], target)
     return itp
 
 
