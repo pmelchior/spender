@@ -8,10 +8,9 @@ import astropy.table as aTable
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
-from torchinterp1d import interp1d
 
 from ..instrument import Instrument, get_skyline_mask
-from ..util import BatchedFilesDataset, load_batch
+from ..util import BatchedFilesDataset, load_batch, interp1d
 
 
 class SDSS(Instrument):

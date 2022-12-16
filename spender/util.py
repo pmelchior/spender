@@ -7,9 +7,41 @@ import GPUtil
 import humanize
 import psutil
 import torch
-import torch.nn.functional as F
 from torch.utils.data import IterableDataset
-from torchinterp1d import interp1d
+
+@torch.jit.script
+def interp1d_single(x: torch.Tensor, y: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    m = (y[1:] - y[:-1]) / (x[1:] - x[:-1])
+    b = y[:-1] - (m * x[:-1])
+
+    indicies = torch.sum(torch.ge(target[:, None], x[None, :]), 1) - 1
+    indicies = torch.clamp(indicies, 0, len(m) - 1)
+
+    itp = m[indicies] * target + b[indicies]
+    low_mask = torch.le(target, x[0])
+    high_mask = torch.ge(target, x[-1])
+    itp[low_mask] = y[0]
+    itp[high_mask] = y[-1]
+
+    return itp
+
+@torch.jit.script
+def interp1d(x, y, target):
+    """One-dimensional linear interpolation. x should be sorted.
+
+    Args:
+        x: the x-coordinates of the data points, must be increasing.
+        y: the y-coordinates of the data points, same length as `x`.
+        target: the x-coordinates at which to evaluate the interpolated values.
+
+    Returns:
+        the interpolated values, same size as `target`.
+    """
+    bs = x.shape[0]
+    itp = torch.zeros(bs, target.shape[-1], device=y.device)
+    for i in range(bs):
+        itp[i] = interp1d_single(x[i], y[i], target)
+    return itp
 
 
 ############ Functions for creating batched files ###############
