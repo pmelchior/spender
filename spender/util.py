@@ -9,8 +9,11 @@ import psutil
 import torch
 from torch.utils.data import IterableDataset
 
+
 @torch.jit.script
-def interp1d_single(x: torch.Tensor, y: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+def interp1d_single(
+    x: torch.Tensor, y: torch.Tensor, target: torch.Tensor
+) -> torch.Tensor:
     m = (y[1:] - y[:-1]) / (x[1:] - x[:-1])
     b = y[:-1] - (m * x[:-1])
 
@@ -25,6 +28,7 @@ def interp1d_single(x: torch.Tensor, y: torch.Tensor, target: torch.Tensor) -> t
 
     return itp
 
+
 @torch.jit.script
 def interp1d(x, y, target):
     """One-dimensional linear interpolation. x should be sorted.
@@ -37,10 +41,14 @@ def interp1d(x, y, target):
     Returns:
         the interpolated values, same size as `target`.
     """
+    assert (
+        x.shape[0] == y.shape[0] or y.shape[0] == 1
+    ), f"x and y must have same length, or y must have length 1, got {x.shape} and {y.shape}"
+    broadcast = y.shape[0] == 1 and x.shape[0] > 1
     bs = x.shape[0]
     itp = torch.zeros(bs, target.shape[-1], device=y.device)
     for i in range(bs):
-        itp[i] = interp1d_single(x[i], y[i], target)
+        itp[i] = interp1d_single(x[i], y[0 if broadcast else i], target)
     return itp
 
 
