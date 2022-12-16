@@ -17,14 +17,16 @@ def interp1d_single(
     m = (y[1:] - y[:-1]) / (x[1:] - x[:-1])
     b = y[:-1] - (m * x[:-1])
 
-    indicies = torch.sum(torch.ge(target[:, None], x[None, :]), 1) - 1
-    indicies = torch.clamp(indicies, 0, len(m) - 1)
+    idx = torch.sum(torch.ge(target[:, None], x[None, :]), 1) - 1
+    idx = torch.clamp(idx, 0, len(m) - 1)
 
-    itp = m[indicies] * target + b[indicies]
-    low_mask = torch.le(target, x[0])
-    high_mask = torch.ge(target, x[-1])
-    itp[low_mask] = y[0]
-    itp[high_mask] = y[-1]
+    itp = m[idx] * target + b[idx]
+
+    if mask:
+        low_mask = torch.le(target, x[0])
+        high_mask = torch.ge(target, x[-1])
+        itp[low_mask] = y[0]
+        itp[high_mask] = y[-1]
 
     return itp
 
@@ -42,11 +44,16 @@ def interp1d(x, y, target):
         the interpolated values, same size as `target`.
     """
     assert (
-        x.shape[0] == y.shape[0] or y.shape[0] == 1
-    ), f"x and y must have same length, or y must have length 1, got {x.shape} and {y.shape}"
-    if y.shape[0] == 1 and x.shape[0] > 1:  # broadcast
+        x.shape[0] == y.shape[0] or x.shape[0] == 1 or y.shape[0] == 1
+    ), f"x and y must have same length, or either x or y must have length 1, got {x.shape} and {y.shape}"
+    if y.shape[0] == 1 and x.shape[0] > 1:
         y = y.expand(x.shape[0], -1)
-    bs = x.shape[0]
+        bs = x.shape[0]
+    elif x.shape[0] == 1 and y.shape[0] > 1:
+        x = x.expand(y.shape[0], -1)
+        bs = y.shape[0]
+    else:
+        bs = x.shape[0]
     itp = torch.zeros(bs, target.shape[-1], device=y.device)
     for i in range(bs):
         itp[i] = interp1d_single(x[i], y[i], target)
