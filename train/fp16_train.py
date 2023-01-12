@@ -1,17 +1,21 @@
 #!/usr/bin/env python
 
-import time, argparse, os
-import numpy as np
+import argparse
 import functools
+import os
+import time
+
+import numpy as np
 import torch
-from torch import nn
-from torch import optim
 from accelerate import Accelerator
+from torch import nn, optim
+
+from spender import SpectrumAutoencoder
+from spender.data.sdss import BOSS, SDSS
+from spender.util import mem_report, resample_to_restframe
+
 # allows one to run fp16_train.py from home directory
 import sys;sys.path.insert(1, './')
-from spender import SpectrumAutoencoder
-from spender.data.sdss import SDSS, BOSS
-from spender.util import mem_report, resample_to_restframe
 
 
 def prepare_train(seq,niter=700):

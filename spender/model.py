@@ -1,7 +1,8 @@
 import numpy as np
 import torch
 from torch import nn
-from torchinterp1d import Interp1d
+from torchinterp1d import interp1d
+
 
 class MLP(nn.Sequential):
     """Multi-Layer Perceptron
@@ -23,23 +24,21 @@ class MLP(nn.Sequential):
     dropout: float
         Dropout probability
     """
-    def __init__(self,
-                 n_in,
-                 n_out,
-                 n_hidden=(16, 16, 16),
-                 act=None,
-                 dropout=0):
+
+    def __init__(self, n_in, n_out, n_hidden=(16, 16, 16), act=None, dropout=0):
 
         if act is None:
-            act = [ nn.LeakyReLU(), ] * (len(n_hidden) + 1)
+            act = [
+                nn.LeakyReLU(),
+            ] * (len(n_hidden) + 1)
         assert len(act) == len(n_hidden) + 1
 
         layer = []
         n_ = [n_in, *n_hidden, n_out]
-        for i in range(len(n_)-1):
-                layer.append(nn.Linear(n_[i], n_[i+1]))
-                layer.append(act[i])
-                layer.append(nn.Dropout(p=dropout))
+        for i in range(len(n_) - 1):
+            layer.append(nn.Linear(n_[i], n_[i + 1]))
+            layer.append(act[i])
+            layer.append(nn.Dropout(p=dropout))
 
         super(MLP, self).__init__(*layer)
 
@@ -60,6 +59,7 @@ class SpeculatorActivation(nn.Module):
     plus_one: bool
         Whether to add 1 to the output
     """
+
     def __init__(self, n_parameter, plus_one=False):
         super().__init__()
         self.plus_one = plus_one
@@ -82,6 +82,7 @@ class SpeculatorActivation(nn.Module):
         if self.plus_one:
             return x + 1
         return x
+
 
 class SpectrumEncoder(nn.Module):
     """Spectrum encoder
@@ -108,13 +109,10 @@ class SpectrumEncoder(nn.Module):
     dropout: float
         Dropout probability
     """
-    def __init__(self,
-                 instrument,
-                 n_latent,
-                 n_hidden=(128, 64, 32),
-                 act=None,
-                 n_aux=1,
-                 dropout=0):
+
+    def __init__(
+        self, instrument, n_latent, n_hidden=(128, 64, 32), act=None, n_aux=1, dropout=0
+    ):
 
         super(SpectrumEncoder, self).__init__()
         self.instrument = instrument
@@ -123,33 +121,43 @@ class SpectrumEncoder(nn.Module):
 
         filters = [128, 256, 512]
         sizes = [5, 11, 21]
-        self.conv1, self.conv2, self.conv3 = self._conv_blocks(filters, sizes, dropout=dropout)
+        self.conv1, self.conv2, self.conv3 = self._conv_blocks(
+            filters, sizes, dropout=dropout
+        )
         self.n_feature = filters[-1] // 2
 
         # pools and softmax work for spectra and weights
-        self.pool1, self.pool2 = tuple(nn.MaxPool1d(s, padding=s//2) for s in sizes[:2])
+        self.pool1, self.pool2 = tuple(
+            nn.MaxPool1d(s, padding=s // 2) for s in sizes[:2]
+        )
         self.softmax = nn.Softmax(dim=-1)
 
         # small MLP to go from CNN features + aux to latents
         if act is None:
-            act = [ nn.PReLU(n) for n in n_hidden ]
+            act = [nn.PReLU(n) for n in n_hidden]
             # last activation identity to have latents centered around 0
             act.append(nn.Identity())
-        self.mlp = MLP(self.n_feature + n_aux, self.n_latent, n_hidden=n_hidden, act=act, dropout=dropout)
-
+        self.mlp = MLP(
+            self.n_feature + n_aux,
+            self.n_latent,
+            n_hidden=n_hidden,
+            act=act,
+            dropout=dropout,
+        )
 
     def _conv_blocks(self, filters, sizes, dropout=0):
         convs = []
         for i in range(len(filters)):
-            f_in = 1 if i == 0 else filters[i-1]
+            f_in = 1 if i == 0 else filters[i - 1]
             f = filters[i]
             s = sizes[i]
             p = s // 2
-            conv = nn.Conv1d(in_channels=f_in,
-                             out_channels=f,
-                             kernel_size=s,
-                             padding=p,
-                            )
+            conv = nn.Conv1d(
+                in_channels=f_in,
+                out_channels=f,
+                kernel_size=s,
+                padding=p,
+            )
             norm = nn.InstanceNorm1d(f)
             act = nn.PReLU(f)
             drop = nn.Dropout(p=dropout)
@@ -220,7 +228,7 @@ class SpectrumEncoder(nn.Module):
         outputs of this classes `forward` method. This functionality is switched off
         during training.
         """
-        if hasattr(self, '_attention_grad'):
+        if hasattr(self, "_attention_grad"):
             return self._attention_grad
         else:
             return None
@@ -247,18 +255,20 @@ class SpectrumDecoder(nn.Module):
     dropout: float
         Dropout probability
     """
-    def __init__(self,
-                 wave_rest,
-                 n_latent=5,
-                 n_hidden=(64, 256, 1024),
-                 act=None,
-                 dropout=0,
-                ):
+
+    def __init__(
+        self,
+        wave_rest,
+        n_latent=5,
+        n_hidden=(64, 256, 1024),
+        act=None,
+        dropout=0,
+    ):
 
         super(SpectrumDecoder, self).__init__()
 
         if act is None:
-            act = [ SpeculatorActivation(n) for n in n_hidden ]
+            act = [SpeculatorActivation(n) for n in n_hidden]
             act.append(SpeculatorActivation(len(wave_rest), plus_one=True))
 
         self.mlp = MLP(
@@ -272,7 +282,7 @@ class SpectrumDecoder(nn.Module):
         self.n_latent = n_latent
 
         # register wavelength tensors on the same device as the entire model
-        self.register_buffer('wave_rest', wave_rest)
+        self.register_buffer("wave_rest", wave_rest)
 
     def decode(self, s):
         """Decode latents into restframe spectrum
@@ -337,7 +347,7 @@ class SpectrumDecoder(nn.Module):
         else:
             wave_obs = instrument.wave_obs
 
-        spectrum = Interp1d()(wave_redshifted, x, wave_obs)
+        spectrum = interp1d(wave_redshifted, x, wave_obs)
 
         # convolve with LSF
         if instrument.lsf is not None:
@@ -372,10 +382,12 @@ class BaseAutoencoder(nn.Module):
     decoder: `nn.Module`
         Decoder
     """
-    def __init__(self,
-                 encoder,
-                 decoder,
-                ):
+
+    def __init__(
+        self,
+        encoder,
+        decoder,
+    ):
 
         super(BaseAutoencoder, self).__init__()
         assert encoder.n_latent == decoder.n_latent
@@ -535,14 +547,16 @@ class SpectrumAutoencoder(BaseAutoencoder):
         Activation functions for the decoder. Needs to have len(n_hidden) + 1
         If `None`, will be set to `LeakyReLU` for every layer.
     """
-    def __init__(self,
-                 instrument,
-                 wave_rest,
-                 n_latent=10,
-                 n_aux=1,
-                 n_hidden=(64, 256, 1024),
-                 act=None,
-                ):
+
+    def __init__(
+        self,
+        instrument,
+        wave_rest,
+        n_latent=10,
+        n_aux=1,
+        n_hidden=(64, 256, 1024),
+        act=None,
+    ):
 
         encoder = SpectrumEncoder(instrument, n_latent, n_aux=n_aux)
 
