@@ -14,7 +14,6 @@ from torch.utils.data import IterableDataset
 def interp1d_single(
     x: torch.Tensor, y: torch.Tensor, target: torch.Tensor, mask: bool = True
 ) -> torch.Tensor:
-    assert torch.all(torch.diff(x) > 0), "x must be monotonically increasing"
     m = (y[1:] - y[:-1]) / (x[1:] - x[:-1])
     b = y[:-1] - (m * x[:-1])
 
@@ -41,16 +40,21 @@ def interp1d(
         x: the x-coordinates of the data points, must be increasing.
         y: the y-coordinates of the data points, same length as `x`.
         target: the x-coordinates at which to evaluate the interpolated values.
+        mask: whether to clamp the target values to the range of x (i.e., don't extrapolate)
     Returns:
         the interpolated values, same size as `target`.
     """
+    # check dimensions
     if x.dim() == 1:
         x = x.unsqueeze(0)
     if y.dim() == 1:
         y = y.unsqueeze(0)
+
+    # check whether we need to broadcast
     assert (
         x.shape[0] == y.shape[0] or x.shape[0] == 1 or y.shape[0] == 1
     ), f"x and y must have same length, or either x or y must have length 1, got {x.shape} and {y.shape}"
+
     if y.shape[0] == 1 and x.shape[0] > 1:
         y = y.expand(x.shape[0], -1)
         bs = x.shape[0]
@@ -59,9 +63,25 @@ def interp1d(
         bs = y.shape[0]
     else:
         bs = x.shape[0]
+
+    # allocate output array
     itp = torch.zeros(bs, target.shape[-1], device=y.device)
+
+    # check for sorting
+    if not torch.all(torch.diff(x, dim=-1) > 0):
+        # if reverse-sorted, just flip
+        if torch.all(torch.diff(x, dim=-1) < 0):
+            x = x.flip(-1)
+            y = y.flip(-1)
+        else:
+            # sort x and y if not already sorted
+            x, idx = torch.sort(x, dim=-1)
+            y = y[torch.arange(bs)[:, None], idx]
+
+    # run interpolation
     for i in range(bs):
         itp[i] = interp1d_single(x[i], y[i], target, mask=mask)
+
     return itp
 
 
