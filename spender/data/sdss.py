@@ -9,8 +9,10 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
+
 from ..instrument import Instrument, get_skyline_mask
 from ..util import BatchedFilesDataset, load_batch, interp1d
+
 
 
 class SDSS(Instrument):
