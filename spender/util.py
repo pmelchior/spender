@@ -7,9 +7,62 @@ import GPUtil
 import humanize
 import psutil
 import torch
-import torch.nn.functional as F
 from torch.utils.data import IterableDataset
-from torchinterp1d import interp1d
+
+
+@torch.jit.script
+def interp1d_single(
+    x: torch.Tensor, y: torch.Tensor, target: torch.Tensor, mask: bool = True
+) -> torch.Tensor:
+    assert torch.all(torch.diff(x) > 0), "x must be monotonically increasing"
+    m = (y[1:] - y[:-1]) / (x[1:] - x[:-1])
+    b = y[:-1] - (m * x[:-1])
+
+    idx = torch.sum(torch.ge(target[:, None], x[None, :]), 1) - 1
+    idx = torch.clamp(idx, 0, len(m) - 1)
+
+    itp = m[idx] * target + b[idx]
+
+    if mask:
+        low_mask = torch.le(target, x[0])
+        high_mask = torch.ge(target, x[-1])
+        itp[low_mask] = y[0]
+        itp[high_mask] = y[-1]
+
+    return itp
+
+
+@torch.jit.script
+def interp1d(
+    x: torch.Tensor, y: torch.Tensor, target: torch.Tensor, mask: bool = True
+) -> torch.Tensor:
+    """One-dimensional linear interpolation. x should be sorted.
+    Args:
+        x: the x-coordinates of the data points, must be increasing.
+        y: the y-coordinates of the data points, same length as `x`.
+        target: the x-coordinates at which to evaluate the interpolated values.
+    Returns:
+        the interpolated values, same size as `target`.
+    """
+    if x.dim() == 1:
+        x = x.unsqueeze(0)
+    if y.dim() == 1:
+        y = y.unsqueeze(0)
+    assert (
+        x.shape[0] == y.shape[0] or x.shape[0] == 1 or y.shape[0] == 1
+    ), f"x and y must have same length, or either x or y must have length 1, got {x.shape} and {y.shape}"
+    if y.shape[0] == 1 and x.shape[0] > 1:
+        y = y.expand(x.shape[0], -1)
+        bs = x.shape[0]
+    elif x.shape[0] == 1 and y.shape[0] > 1:
+        x = x.expand(y.shape[0], -1)
+        bs = y.shape[0]
+    else:
+        bs = x.shape[0]
+    itp = torch.zeros(bs, target.shape[-1], device=y.device)
+    for i in range(bs):
+        itp[i] = interp1d_single(x[i], y[i], target, mask=mask)
+    return itp
 
 
 ############ Functions for creating batched files ###############

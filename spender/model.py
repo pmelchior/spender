@@ -1,7 +1,6 @@
-import numpy as np
 import torch
 from torch import nn
-from torchinterp1d import interp1d
+from .util import interp1d
 
 
 class MLP(nn.Sequential):
