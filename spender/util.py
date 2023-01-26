@@ -35,12 +35,14 @@ def interp1d_single(
 def interp1d(
     x: torch.Tensor, y: torch.Tensor, target: torch.Tensor, mask: bool = True
 ) -> torch.Tensor:
-    """One-dimensional linear interpolation. x should be sorted.
+    """One-dimensional linear interpolation. If x is not sorted, this will sort x for you.
+
     Args:
         x: the x-coordinates of the data points, must be increasing.
         y: the y-coordinates of the data points, same length as `x`.
         target: the x-coordinates at which to evaluate the interpolated values.
-        mask: whether to clamp the target values to the range of x (i.e., don't extrapolate)
+        mask: whether to clamp target values outside of the range of x (i.e., don't extrapolate)
+
     Returns:
         the interpolated values, same size as `target`.
     """
@@ -49,8 +51,10 @@ def interp1d(
         x = x.unsqueeze(0)
     if y.dim() == 1:
         y = y.unsqueeze(0)
+    if target.dim() == 1:
+        target = target.unsqueeze(0)
 
-    # check whether we need to broadcast
+    # check whether we need to broadcast x and y
     assert (
         x.shape[0] == y.shape[0] or x.shape[0] == 1 or y.shape[0] == 1
     ), f"x and y must have same length, or either x or y must have length 1, got {x.shape} and {y.shape}"
@@ -64,8 +68,13 @@ def interp1d(
     else:
         bs = x.shape[0]
 
-    # allocate output array
-    itp = torch.zeros(bs, target.shape[-1], device=y.device)
+    # check whether we need to broadcast target
+    assert (
+        target.shape[0] == bs or target.shape[0] == 1
+    ), f"target must have same length as x and y, or length 1, got {target.shape} and {x.shape}"
+
+    if target.shape[0] == 1:
+        target = target.expand(bs, -1)
 
     # check for sorting
     if not torch.all(torch.diff(x, dim=-1) > 0):
@@ -78,9 +87,11 @@ def interp1d(
             x, idx = torch.sort(x, dim=-1)
             y = y[torch.arange(bs)[:, None], idx]
 
-    # run interpolation
-    for i in range(bs):
-        itp[i] = interp1d_single(x[i], y[i], target, mask=mask)
+    # this is apparantly how parallelism works in pytorch?
+    futures = [
+        torch.jit.fork(interp1d_single, x[i], y[i], target[i], mask) for i in range(bs)
+    ]
+    itp = torch.stack([torch.jit.wait(f) for f in futures])
 
     return itp
 
