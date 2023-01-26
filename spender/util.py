@@ -12,7 +12,7 @@ from torch.utils.data import IterableDataset
 
 @torch.jit.script
 def interp1d_single(
-    x: torch.Tensor, y: torch.Tensor, target: torch.Tensor
+    x: torch.Tensor, y: torch.Tensor, target: torch.Tensor, mask: bool = True
 ) -> torch.Tensor:
     m = (y[1:] - y[:-1]) / (x[1:] - x[:-1])
     b = y[:-1] - (m * x[:-1])
@@ -32,7 +32,7 @@ def interp1d_single(
 
 
 @torch.jit.script
-def interp1d(x, y, target):
+def interp1d(x, y, target, mask: bool = True):
     """One-dimensional linear interpolation. x should be sorted.
 
     Args:
@@ -56,7 +56,7 @@ def interp1d(x, y, target):
         bs = x.shape[0]
     itp = torch.zeros(bs, target.shape[-1], device=y.device)
     for i in range(bs):
-        itp[i] = interp1d_single(x[i], y[i], target)
+        itp[i] = interp1d_single(x[i], y[i], target, mask=mask)
     return itp
 
 
