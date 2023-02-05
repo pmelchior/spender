@@ -22,6 +22,11 @@ For the time being, you will have to install one dependency manually: `torchinte
 We make the best-fitting models discussed in the paper available:
 * [standard resolution](https://www.dropbox.com/s/6o5htaic8wimito/sdss.speculator%2B1.variable.lr_1e-3.latent_10.0.pt?dl=0) (S=10, R=5881)
 * [super-resolution](https://www.dropbox.com/s/d14f1jryelxc5if/sdss.speculator%2B1.variable.superres.lsf_5.lr_1e-3.latent_8.0.pt?dl=0) (S=8, R=11762)
+* [similarity+consistency training](https://www.dropbox.com/s/7ecvnbpc8do6pjy/sdss.similarity-consistency.latent_6.0.pt?dl=0) (S=6, R=7000; see Liang et al. 2023)
+
+## SDSS Outliers Catalog
+
+The [catalog of the latent-space probability](https://www.dropbox.com/s/2eo8r4mlsh7p15o/FULL_SDSSID_logP.txt.bz2?dl=0) for the SDSS-I main galaxy sample; see Liang et al. (2023) for details
 
 ## Use
 
