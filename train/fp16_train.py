@@ -152,7 +152,7 @@ def _losses(model,
     spec, w, z = batch
 
     # need the latents later on if similarity=True
-    s = model.encode(spec, aux=z.unsqueeze(1))
+    s = model.encode(spec)#, aux=z.unsqueeze(1))
     if skip: return 0,0,s
     loss = model.loss(spec, w, instrument, z=z, s=s)
 
@@ -436,6 +436,7 @@ if __name__ == "__main__":
                                    wave_rest,
                                    n_latent=args.latents,
                                    n_hidden=n_hidden,
+                                   n_aux=0
                                    )
               for instrument in instruments ]
     # use same decoder

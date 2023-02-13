@@ -221,8 +221,8 @@ class BaseAutoencoder(nn.Module):
 
     def _forward(self, x, w=None, instrument=None, z=None, s=None, aux=None):
         if s is None:
-            if aux is None and z is not None:
-                aux = z.unsqueeze(1)
+            #if aux is None and z is not None:
+            #    aux = z.unsqueeze(1)
             s = self.encode(x, aux=aux)
         if instrument is None:
             instrument = self.encoder.instrument
