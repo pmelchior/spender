@@ -130,13 +130,12 @@ class SDSS(Instrument):
         L = len(cls._wave_obs)
         start = int(np.around((loglam[0] - torch.log10(cls._wave_obs[0]).item())/0.0001))
         if start<0:
-            print("start<0!")
-            print("loglam[0]:",loglam[0],"start",start)
             flux = flux[-start:]
             ivar = ivar[-start:]
             end = min(start+len(loglam), L)
             start = 0
-        else:end = min(start+len(loglam), L)
+        else:
+            end = min(start+len(loglam), L)
         spec = torch.zeros(L)
         w = torch.zeros(L)
         # explicit type conversion to float32 to get to little endian
@@ -145,13 +144,6 @@ class SDSS(Instrument):
 
         # remove regions around skylines
         w[cls._skyline_mask] = 0
-
-        # get plate, mjd, fiberid info
-        #specinfo = hdulist[2].data[0]
-        #id = torch.tensor((specinfo['PLATE'], specinfo['MJD'], specinfo['FIBERID']), dtype=torch.int)
-        # get redshift and error
-        #z = torch.tensor(specinfo['Z'])
-        #zerr = torch.tensor(specinfo['Z_ERR'])
 
         # normalize spectrum:
         # for redshift invariant encoder: select norm window in restframe
@@ -168,10 +160,17 @@ class SDSS(Instrument):
         w *= norm**2
 
         return spec, w, norm
+    
+        # get plate, mjd, fiberid info
+        #specinfo = hdulist[2].data[0]
+        #id = torch.tensor((specinfo['PLATE'], specinfo['MJD'], specinfo['FIBERID']), dtype=torch.int)
+        # get redshift and error
+        #z = torch.tensor(specinfo['Z'])
+        #zerr = torch.tensor(specinfo['Z_ERR'])
 
     @classmethod
-    def make_batch(cls, dir, ids):
-        N = len(ids)
+    def make_batch(cls, dir, fields):
+        N = len(fields)
         L = len(cls._wave_obs)
         spec = torch.empty((N, L))
         w = torch.empty((N, L))
@@ -180,7 +179,7 @@ class SDSS(Instrument):
         norm = torch.empty(N)
         zerr = torch.empty(N)
         for i in range(N):
-            plate, mjd, fiberid, z_, zerr_ = ids[i]
+            plate, mjd, fiberid, z_, zerr_ = fields[i]
             f = cls.get_spectrum(dir, plate, mjd, fiberid, return_file=True)
             spec[i], w[i], norm[i] = cls.prepare_spectrum(f, z_)
             z[i], zerr[i] = z_, zerr_
@@ -188,7 +187,7 @@ class SDSS(Instrument):
         return spec, w, z, id, norm, zerr
 
     @classmethod
-    def get_ids(cls, dir, selection_fct=None):
+    def get_fields(cls, dir, fields=["PLATE", "MJD", "FIBERID", "Z", "Z_ERR"], selection_fct=None):
         main_file = os.path.join(dir, "specObj-dr16.fits")
         if not os.path.isfile(main_file):
             url = "https://data.sdss.org/sas/dr16/sdss/spectro/redux/specObj-dr16.fits"
@@ -211,12 +210,7 @@ class SDSS(Instrument):
         else:
             sel = selection_fct(specobj)
 
-        plate = specobj['PLATE'][sel]
-        mjd = specobj['MJD'][sel]
-        fiberid = specobj['FIBERID'][sel]
-        z = specobj['Z'][sel]
-        zerr = specobj['Z_ERR'][sel]
-        return tuple(zip(plate, mjd, fiberid, z, zerr))
+        return specobj[fields][sel] #tuple(zip(specobj[f][sel] for f in fields))
 
     @classmethod
     def augment_spectra(cls, batch, redshift=True, noise=True, mask=True, ratio=0.05, z_new=None):
