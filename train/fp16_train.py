@@ -7,10 +7,8 @@ import torch
 from torch import nn
 from torch import optim
 from accelerate import Accelerator
-# allows one to run fp16_train.py from home directory
-import sys;sys.path.insert(1, './')
 from spender import SpectrumAutoencoder
-from spender.data.sdss import SDSS, BOSS
+from spender.data.sdss import SDSS
 from spender.util import mem_report, resample_to_restframe
 
 
@@ -48,7 +46,6 @@ def get_all_parameters(models,instruments):
         if inst==None:continue
         instr_params += inst.parameters()
         s = [p.numel() for p in inst.parameters()]
-        #print("Adding %d parameters..."%sum(s))
     if instr_params != []:
         dicts.append({'params':instr_params,'lr': 1e-4})
         n_parameters += sum([p.numel() for p in instr_params if p.requires_grad])
@@ -152,7 +149,7 @@ def _losses(model,
     spec, w, z = batch
 
     # need the latents later on if similarity=True
-    s = model.encode(spec)#, aux=z.unsqueeze(1))
+    s = model.encode(spec)
     if skip: return 0,0,s
     loss = model.loss(spec, w, instrument, z=z, s=s)
 
@@ -390,7 +387,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # define instruments
-    instruments = [ SDSS() ]#, BOSS() ]
+    instruments = [ SDSS() ]
     n_encoder = len(instruments)
 
     # restframe wavelength for reconstructed spectra
@@ -425,7 +422,6 @@ if __name__ == "__main__":
 
     annealing_step = 0.10
     ANNEAL_SCHEDULE = np.arange(0,10,annealing_step)
-    #ANNEAL_SCHEDULE = np.hstack((np.zeros(20),ANNEAL_SCHEDULE))
 
     if args.verbose and args.similarity:
         print("similarity_slope:",len(ANNEAL_SCHEDULE),ANNEAL_SCHEDULE)
