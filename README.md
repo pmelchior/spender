@@ -2,7 +2,8 @@
 
 _Neural spectrum encoder and decoder_
 
-Paper: https://arxiv.org/abs/2211.07890
+Paper I: https://arxiv.org/abs/2211.07890
+Paper II: https://arxiv.org/abs/2302.02496
 
 From a data-driven side, galaxy spectra have two fundamental degrees of freedom: their instrinsic spectral properties (or type, if you believe in such a thing) and their redshift. The latter makes them awkward to ingest because it stretches everything, which means spectral features don't appear at the same places. This is why most analyses of the intrinsic properties are done by transforming the observed spectrum to restframe.
 
