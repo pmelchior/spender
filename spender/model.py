@@ -49,14 +49,12 @@ class SpectrumEncoder(nn.Module):
                  n_latent,
                  n_hidden=(128, 64, 32),
                  act=None,
-                 n_aux=1,
                  dropout=0):
 
         super(SpectrumEncoder, self).__init__()
         self.instrument = instrument
         self.n_latent = n_latent
-        self.n_aux = n_aux
-
+        
         filters = [128, 256, 512]
         sizes = [5, 11, 21]
         self.conv1, self.conv2, self.conv3 = self._conv_blocks(filters, sizes, dropout=dropout)
@@ -71,7 +69,7 @@ class SpectrumEncoder(nn.Module):
             act = [ nn.PReLU(n) for n in n_hidden ]
             # last activation identity to have latents centered around 0
             act.append(nn.Identity())
-        self.mlp = MLP(self.n_feature + n_aux, self.n_latent, n_hidden=n_hidden, act=act, dropout=dropout)
+        self.mlp = MLP(self.n_feature, self.n_latent, n_hidden=n_hidden, act=act, dropout=dropout)
 
 
     def _conv_blocks(self, filters, sizes, dropout=0):
@@ -104,7 +102,7 @@ class SpectrumEncoder(nn.Module):
 
         return h, a
 
-    def forward(self, x, aux=None):
+    def forward(self, x):
         # run through CNNs
         h, a = self._downsample(x)
         # softmax attention
@@ -118,9 +116,7 @@ class SpectrumEncoder(nn.Module):
         # apply attention
         x = torch.sum(h * a, dim=2)
 
-        # redshift depending feature combination to final latents
-        if aux is not None and aux is not False:
-            x = torch.cat((x, aux), dim=-1)
+        # run attended features into MLP for final latents
         x = self.mlp(x)
         return x
 
@@ -213,17 +209,15 @@ class BaseAutoencoder(nn.Module):
         self.encoder = encoder
         self.decoder = decoder
 
-    def encode(self, x, aux=None):
-        return self.encoder(x, aux=aux)
+    def encode(self, x):
+        return self.encoder(x)
 
     def decode(self, x):
         return self.decoder(x)
 
-    def _forward(self, x, w=None, instrument=None, z=None, s=None, aux=None):
+    def _forward(self, x, w=None, instrument=None, z=None, s=None):
         if s is None:
-            #if aux is None and z is not None:
-            #    aux = z.unsqueeze(1)
-            s = self.encode(x, aux=aux)
+            s = self.encode(x)
         if instrument is None:
             instrument = self.encoder.instrument
 
@@ -232,12 +226,12 @@ class BaseAutoencoder(nn.Module):
 
         return s, spectrum_restframe, spectrum_observed
 
-    def forward(self, x, w=None, instrument=None, z=None, s=None, aux=None):
-        s, spectrum_restframe, spectrum_observed = self._forward(x, w=w, instrument=instrument, z=z, s=s, aux=aux)
+    def forward(self, x, w=None, instrument=None, z=None, s=None):
+        s, spectrum_restframe, spectrum_observed = self._forward(x, w=w, instrument=instrument, z=z, s=s)
         return spectrum_observed
 
-    def loss(self, x, w, instrument=None, z=None, s=None, aux=None, individual=False):
-        spectrum_observed = self.forward(x, instrument=instrument, z=z, s=s, aux=aux)
+    def loss(self, x, w, instrument=None, z=None, s=None, individual=False):
+        spectrum_observed = self.forward(x, instrument=instrument, z=z, s=s)
         return self._loss(x, w, spectrum_observed, individual=individual)
 
     def _loss(self, x, w, spectrum_observed, individual=False):
@@ -271,12 +265,11 @@ class SpectrumAutoencoder(BaseAutoencoder):
                  instrument,
                  wave_rest,
                  n_latent=10,
-                 n_aux=1,
                  n_hidden=(64, 256, 1024),
                  act=None,
                 ):
 
-        encoder = SpectrumEncoder(instrument, n_latent, n_aux=n_aux)
+        encoder = SpectrumEncoder(instrument, n_latent)
 
         decoder = SpectrumDecoder(
             wave_rest,
