@@ -7,7 +7,6 @@ import GPUtil
 import humanize
 import psutil
 import torch
-import torch.nn.functional as F
 from torch.utils.data import IterableDataset
 from torchinterp1d import interp1d
 
@@ -38,7 +37,7 @@ class BatchedFilesDataset(IterableDataset):
 
     This class allows the use of batched files, whose size can be optimized for loading
     performance, as input for a :class:`torch.utils.data.DataLoader`, whose batch size
-    can be chosen indepdently to optimize training.
+    can be chosen independently to optimize training.
 
     See https://medium.com/speechmatics/how-to-build-a-streaming-dataloader-with-pytorch-a66dd891d9dd
     for details.

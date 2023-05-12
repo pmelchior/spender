@@ -1,4 +1,3 @@
-import numpy as np
 import torch
 from torch import nn
 from torchinterp1d import interp1d
@@ -104,21 +103,18 @@ class SpectrumEncoder(nn.Module):
     act: list of callables
         Activation functions after every layer. Needs to have len(n_hidden) + 1
         If `None`, will be set to `LeakyReLU` for every layer.
-    n_aux: int
-        Dimensions of auxiliary inputs for the :class:`MLP`
     dropout: float
         Dropout probability
     """
 
     def __init__(
-        self, instrument, n_latent, n_hidden=(128, 64, 32), act=None, n_aux=1, dropout=0
+        self, instrument, n_latent, n_hidden=(128, 64, 32), act=None, dropout=0
     ):
 
         super(SpectrumEncoder, self).__init__()
         self.instrument = instrument
         self.n_latent = n_latent
-        self.n_aux = n_aux
-
+        
         filters = [128, 256, 512]
         sizes = [5, 11, 21]
         self.conv1, self.conv2, self.conv3 = self._conv_blocks(
@@ -132,18 +128,12 @@ class SpectrumEncoder(nn.Module):
         )
         self.softmax = nn.Softmax(dim=-1)
 
-        # small MLP to go from CNN features + aux to latents
+        # small MLP to go from CNN features to latents
         if act is None:
             act = [nn.PReLU(n) for n in n_hidden]
             # last activation identity to have latents centered around 0
             act.append(nn.Identity())
-        self.mlp = MLP(
-            self.n_feature + n_aux,
-            self.n_latent,
-            n_hidden=n_hidden,
-            act=act,
-            dropout=dropout,
-        )
+        self.mlp = MLP(self.n_feature, self.n_latent, n_hidden=n_hidden, act=act, dropout=dropout)
 
     def _conv_blocks(self, filters, sizes, dropout=0):
         convs = []
@@ -176,15 +166,13 @@ class SpectrumEncoder(nn.Module):
 
         return h, a
 
-    def forward(self, y, aux=None):
+    def forward(self, y):
         """Forward method
 
         Parameters
         ----------
         y: `torch.tensor`, shape (N, L)
             Batch of observed spectra
-        aux: `torch.tensor`, shape (N, n_aux)
-            (optional) Batch of auxiliary inputs to MLP
 
         Returns
         -------
@@ -204,9 +192,7 @@ class SpectrumEncoder(nn.Module):
         # apply attention
         x = torch.sum(h * a, dim=2)
 
-        # redshift depending feature combination to final latents
-        if aux is not None and aux is not False:
-            x = torch.cat((x, aux), dim=-1)
+        # run attended features into MLP for final latents
         x = self.mlp(x)
         return x
 
@@ -225,7 +211,7 @@ class SpectrumEncoder(nn.Module):
         Factor to compute the importance of attention for Grad-FAM method.
 
         Requires a previous `loss.backward` call for any scalar loss function based on
-        outputs of this classes `forward` method. This functionality is switched off
+        outputs of this class's `forward` method. This functionality is switched off
         during training.
         """
         if hasattr(self, "_attention_grad"):
@@ -394,21 +380,20 @@ class BaseAutoencoder(nn.Module):
         self.encoder = encoder
         self.decoder = decoder
 
-    def encode(self, y, aux=None):
+    def encode(self, x):
         """Encode from observed spectrum to latents
 
         Parameters
         ----------
         y: `torch.tensor`, shape (N, L)
             Batch of observed spectra
-        aux: `torch.tensor`, shape (N, n_aux)
-            (optional) Batch of auxiliary inputs to MLP
+
         Returns
         -------
         s: `torch.tensor`, shape (N, n_latent)
             Batch of latents that encode `spectra`
         """
-        return self.encoder(y, aux=aux)
+        return self.encoder(x)
 
     def decode(self, s):
         """Decode latents into restframe spectrum
@@ -425,11 +410,9 @@ class BaseAutoencoder(nn.Module):
         """
         return self.decoder(s)
 
-    def _forward(self, y, instrument=None, z=None, s=None, aux=None):
+    def _forward(self, y, instrument=None, z=None, s=None):
         if s is None:
-            if aux is None and z is not None:
-                aux = z.unsqueeze(1)
-            s = self.encode(y, aux=aux)
+            s = self.encode(y)
         if instrument is None:
             instrument = self.encoder.instrument
 
@@ -438,7 +421,7 @@ class BaseAutoencoder(nn.Module):
 
         return s, x, y
 
-    def forward(self, y, instrument=None, z=None, s=None, aux=None):
+    def forward(self, y, instrument=None, z=None, s=None):
         """Forward method
 
         Transforms observed spectra into their reconstruction for a given intrument
@@ -455,18 +438,16 @@ class BaseAutoencoder(nn.Module):
         s: `torch.tensor`, shape (N, S)
             (optional) Batch of latents. When given, encoding is omitted and these
             latents are used instead.
-        aux: `torch.tensor`, shape (N, n_aux)
-            (optional) Batch of auxiliary inputs to encoder MLP
 
         Returns
         -------
         y: `torch.tensor`, shape (N, L)
             Batch of spectra at redshift `z` as observed by `instrument`
         """
-        s, x, y_ = self._forward(y, instrument=instrument, z=z, s=s, aux=aux)
+        s, x, y_ = self._forward(y, instrument=instrument, z=z, s=s)
         return y_
 
-    def loss(self, y, w, instrument=None, z=None, s=None, aux=None, individual=False):
+    def loss(self, y, w, instrument=None, z=None, s=None, individual=False):
         """Weighted MSE loss
 
         Parameter
@@ -482,8 +463,6 @@ class BaseAutoencoder(nn.Module):
         s: `torch.tensor`, shape (N, S)
             (optional) Batch of latents. When given, encoding is omitted and these
             latents are used instead.
-        aux: `torch.tensor`, shape (N, n_aux)
-            (optional) Batch of auxiliary inputs to encoder MLP
         individual: bool
             Whether the loss is computed for each spectrum individually or aggregated
 
@@ -491,7 +470,7 @@ class BaseAutoencoder(nn.Module):
         -------
         float or `torch.tensor`, shape (N,) of weighted MSE loss
         """
-        y_ = self.forward(y, instrument=instrument, z=z, s=s, aux=aux)
+        y_ = self.forward(y, instrument=instrument, z=z, s=s)
         return self._loss(y, w, y_, individual=individual)
 
     def _loss(self, y, w, y_, individual=False):
@@ -538,9 +517,6 @@ class SpectrumAutoencoder(BaseAutoencoder):
         Restframe wavelengths
     n_latent: int
         Dimension of latent space
-    n_aux: int
-        Dimensions of auxiliary inputs for the encoder :class:`MLP`. Set to 1 to use the
-        redshift as auxiliary.
     n_hidden: list of int
         Dimensions for every hidden layer of the decoder :class:`MLP`
     act: list of callables
@@ -553,12 +529,11 @@ class SpectrumAutoencoder(BaseAutoencoder):
         instrument,
         wave_rest,
         n_latent=10,
-        n_aux=1,
         n_hidden=(64, 256, 1024),
         act=None,
     ):
 
-        encoder = SpectrumEncoder(instrument, n_latent, n_aux=n_aux)
+        encoder = SpectrumEncoder(instrument, n_latent)
 
         decoder = SpectrumDecoder(
             wave_rest,

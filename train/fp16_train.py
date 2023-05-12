@@ -8,17 +8,15 @@ import time
 import numpy as np
 import torch
 from accelerate import Accelerator
-from torch import nn, optim
-
 from spender import SpectrumAutoencoder
-from spender.data.sdss import BOSS, SDSS
+from spender.data.sdss import SDSS
 from spender.util import mem_report, resample_to_restframe
 
 # allows one to run fp16_train.py from home directory
 import sys;sys.path.insert(1, './')
 
 
-def prepare_train(seq,niter=700):
+def prepare_train(seq,niter=1000):
     for d in seq:
         if not "iteration" in d:d["iteration"]=niter
         if not "encoder" in d:d.update({"encoder":d["data"]})
@@ -52,7 +50,6 @@ def get_all_parameters(models,instruments):
         if inst==None:continue
         instr_params += inst.parameters()
         s = [p.numel() for p in inst.parameters()]
-        #print("Adding %d parameters..."%sum(s))
     if instr_params != []:
         dicts.append({'params':instr_params,'lr': 1e-4})
         n_parameters += sum([p.numel() for p in instr_params if p.requires_grad])
@@ -150,12 +147,14 @@ def _losses(model,
             batch,
             similarity=True,
             slope=0,
+            skip=False
            ):
 
     spec, w, z = batch
 
     # need the latents later on if similarity=True
-    s = model.encode(spec, aux=z.unsqueeze(1))
+    s = model.encode(spec)
+    if skip: return 0,0,s
     loss = model.loss(spec, w, instrument, z=z, s=s)
 
     if similarity:
@@ -170,15 +169,14 @@ def get_losses(model,
                aug_fct=None,
                similarity=True,
                consistency=True,
-               slope=0,
-               mask_skyline=True,
+               slope=0
                ):
 
-    loss, sim_loss, s = _losses(model, instrument, batch, similarity=similarity, slope=slope, mask_skyline=mask_skyline)
+    loss, sim_loss, s = _losses(model, instrument, batch, similarity=similarity, slope=slope)
 
     if aug_fct is not None:
         batch_copy = aug_fct(batch)
-        loss_, sim_loss_, s_ = _losses(model, instrument, batch_copy, similarity=similarity, slope=slope, mask_skyline=mask_skyline)
+        loss_, sim_loss_, s_ = _losses(model, instrument, batch_copy, similarity=similarity, slope=slope,skip=True)
     else:
         loss_ = sim_loss_ = 0
 
@@ -243,8 +241,8 @@ def train(models,
         mem_report()
 
     ladder = build_ladder(train_sequence)
-    optimizer = optim.Adam(model_parameters, lr=lr, eps=1e-4)
-    scheduler = optim.lr_scheduler.OneCycleLR(optimizer, lr,
+    optimizer = torch.optim.Adam(model_parameters, lr=lr, eps=1e-4)
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, lr,
                                               total_steps=n_epoch)
 
     accelerator = Accelerator(mixed_precision='fp16')
@@ -393,7 +391,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # define instruments
-    instruments = [ SDSS() ]#, BOSS() ]
+    instruments = [ SDSS() ]
     n_encoder = len(instruments)
 
     # restframe wavelength for reconstructed spectra
@@ -426,9 +424,8 @@ if __name__ == "__main__":
     FULL = {"data":[True,True],"decoder":True}
     train_sequence = prepare_train([FULL])
 
-    annealing_step = 0.05
-    ANNEAL_SCHEDULE = np.arange(0,1,annealing_step)
-    ANNEAL_SCHEDULE = np.hstack((np.zeros(20),ANNEAL_SCHEDULE))
+    annealing_step = 0.10
+    ANNEAL_SCHEDULE = np.arange(0,10,annealing_step)
 
     if args.verbose and args.similarity:
         print("similarity_slope:",len(ANNEAL_SCHEDULE),ANNEAL_SCHEDULE)
@@ -439,6 +436,7 @@ if __name__ == "__main__":
                                    wave_rest,
                                    n_latent=args.latents,
                                    n_hidden=n_hidden,
+                                   n_aux=0
                                    )
               for instrument in instruments ]
     # use same decoder

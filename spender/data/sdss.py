@@ -7,6 +7,7 @@ import astropy.io.fits as fits
 import astropy.table as aTable
 import numpy as np
 import torch
+import pickle
 from torch.utils.data import DataLoader
 from torchinterp1d import interp1d
 
@@ -97,7 +98,7 @@ class SDSS(Instrument):
         list of filepaths
         """
         if tag is None:
-            tag = "chunk1024"
+            tag = "variable"
         classname = cls.__mro__[0].__name__
         filename = f"{classname}{tag}_*.pkl"
         batch_files = glob.glob(dir + "/" + filename)
@@ -197,13 +198,13 @@ class SDSS(Instrument):
         Either the local file name or the prepared spectrum
         """
 
+        plate, mjd, fiberid = [int(i) for i in [plate, mjd, fiberid]]
         filename = "spec-%s-%i-%s.fits" % (
             str(plate).zfill(4),
             mjd,
             str(fiberid).zfill(4),
         )
-        classname = cls.__mro__[0].__name__.lower()
-        dirname = os.path.join(dir, f"{classname}-spectra")
+        dirname = os.path.join(dir, str(plate).zfill(4))
         flocal = os.path.join(dirname, filename)
         if not os.path.isfile(flocal):
             os.makedirs(dirname, exist_ok=True)
@@ -277,7 +278,7 @@ class SDSS(Instrument):
         return display.Image(flocal)
 
     @classmethod
-    def prepare_spectrum(cls, filename):
+    def prepare_spectrum(cls, filename, z=None):
         """Prepare spectrum for analysis
 
         This method creates an extended mask, using the original SDSS `and_mask` and
@@ -288,16 +289,16 @@ class SDSS(Instrument):
         standardizes the variable wavelengths of each observation.
 
         A normalization is computed as the median flux in the relatively flat region
-        between 5300 and 5850 A. The spectrum is divided by this factor, the weights
+        between restframe 5300 and 5850 A. The spectrum is divided by this factor, the weights
         are muliplied with the square of this factor.
-
-        Redshift estimate and errors as determined by the SDSS pipeline are read from
-        the file headers.
 
         Parameter
         ---------
         filename: string
-            Path to local file containing the spetrum
+            Path to local file containing the spectrum
+        z: float or None
+            Redshift of the spectrum
+            If None, redshift and its error will be read from the file and returned
 
         Returns
         -------
@@ -305,14 +306,12 @@ class SDSS(Instrument):
             Normalized spectrum
         w: `torch.tensor`, shape (L, )
             Inverse variance weights of normalized spectrum
-        z: `torch.tensor`, shape (1, )
-            Redshift from SDSS pipeline
-        id: `torch.tensor`, shape (3, )
-            SDSS plate, mjd, fiberid triple
         norm: `torch.tensor`, shape (1, )
-            Normalization factor
-        zerr: torch.tensor`, shape (1, )
-            Redshift error from SDSS pipeline
+            Flux normalization factor
+        z: `torch.tensor`, shape (1, )
+            Redshift (only returned when argument z=None)
+        zerr: `torch.tensor`, shape (1, )
+            Redshift error (only returned when argument z=None)
         """
         hdulist = fits.open(filename)
         data = hdulist[1].data
@@ -326,35 +325,39 @@ class SDSS(Instrument):
 
         # loglam is subset of _wave_obs, need to insert into extended tensor
         L = len(cls._wave_obs)
-        start = int(
-            np.around((loglam[0] - torch.log10(cls._wave_obs[0]).item()) / 0.0001)
-        )
-        end = min(start + len(loglam), L)
+        start = int(np.around((loglam[0] - torch.log10(cls._wave_obs[0]).item())/0.0001))
+        if start<0:
+            flux = flux[-start:]
+            ivar = ivar[-start:]
+            end = min(start+len(loglam), L)
+            start = 0
+        else:
+            end = min(start+len(loglam), L)
         spec = torch.zeros(L)
         w = torch.zeros(L)
         # explicit type conversion to float32 to get to little endian
-        spec[start:end] = torch.from_numpy(flux.astype(np.float32))
+        spec[start:end]  = torch.from_numpy(flux.astype(np.float32))
         w[start:end] = torch.from_numpy(ivar.astype(np.float32))
 
         # remove regions around skylines
         w[cls._skyline_mask] = 0
 
-        # get plate, mjd, fiberid info
-        specinfo = hdulist[2].data[0]
-        id = torch.tensor(
-            (specinfo["PLATE"], specinfo["MJD"], specinfo["FIBERID"]), dtype=torch.int
-        )
-
-        # get redshift and error
-        z = torch.tensor(specinfo["Z"])
-        zerr = torch.tensor(specinfo["Z_ERR"])
+        extended_return = False
+        if z is None:
+            # get plate, mjd, fiberid info
+            specinfo = hdulist[2].data[0]
+            # get redshift and error
+            z = torch.tensor(specinfo["Z"])
+            zerr = torch.tensor(specinfo["Z_ERR"])
+            extended_return = True
 
         # normalize spectrum:
         # for redshift invariant encoder: select norm window in restframe
         wave_rest = cls._wave_obs / (1 + z)
         # flatish region that is well observed out to z ~ 0.5
         sel = (w > 0) & (wave_rest > 5300) & (wave_rest < 5850)
-        norm = torch.median(spec[sel])
+        if sel.count_nonzero() == 0: norm = torch.tensor(0)
+        else: norm = torch.median(spec[sel])
         # remove spectra (from training) for which no valid norm could be found
         if not torch.isfinite(norm):
             norm = 0
@@ -362,18 +365,20 @@ class SDSS(Instrument):
             spec /= norm
         w *= norm**2
 
-        return spec, w, z, id, norm, zerr
-
+        if extended_return:
+            return spec, w, norm, z, zerr
+        return spec, w, norm
+    
     @classmethod
-    def make_batch(cls, dir, ids):
+    def make_batch(cls, dir, fields):
         """Make a batch of spectra from their IDs
 
         Parameters
         ----------
         dir: string
             Root directory for data storage
-        ids: list of (plate, mjd, fiberid)
-            Identifier of spectrum
+        fields: list of (plate, mjd, fiberid, [z, z_err])
+            List of object qualifiers from query()
 
         Returns
         -------
@@ -383,19 +388,13 @@ class SDSS(Instrument):
             Inverse variance weights of normalized spectrum
         z: `torch.tensor`, shape (N, )
             Redshift from SDSS pipeline
-        id: `torch.tensor`, shape (N, 3)
-            SDSS plate, mjd, fiberid triple
         norm: `torch.tensor`, shape (N, )
             Normalization factor
         zerr: torch.tensor`, shape (N, )
             Redshift error from SDSS pipeline
         """
 
-        files = [
-            cls.get_spectrum(dir, plate, mjd, fiberid, return_file=True)
-            for plate, mjd, fiberid in ids
-        ]
-        N = len(files)
+        N = len(fields)
         L = len(cls._wave_obs)
         spec = torch.empty((N, L))
         w = torch.empty((N, L))
@@ -403,13 +402,24 @@ class SDSS(Instrument):
         id = torch.empty((N, 3), dtype=torch.int)
         norm = torch.empty(N)
         zerr = torch.empty(N)
-        for i, f in enumerate(files):
-            spec[i], w[i], z[i], id[i], norm[i], zerr[i] = cls.prepare_spectrum(f)
-        return spec, w, z, id, norm, zerr
+        for i in range(N):
+            if len(fields[i]) == 5:
+                plate, mjd, fiberid, z_, zerr_ = fields[i]
+                f = cls.get_spectrum(dir, plate, mjd, fiberid, return_file=True)
+                spec[i], w[i], norm[i] = cls.prepare_spectrum(f, z_)
+                z[i], zerr[i] = z_, zerr_
+            elif len(fields[i]) == 3:
+                plate, mjd, fiberid = fields[i]
+                f = cls.get_spectrum(dir, plate, mjd, fiberid, return_file=True)
+                spec[i], w[i], norm[i], z[i], zerr[i] = cls.prepare_spectrum(f)
+            else:
+                raise AttributeError("fields must contain (plate, mjd, fiberid, z, z_err) or (plate, mjd, fiberid)")
+            id[i] = torch.tensor((plate, mjd, fiberid), dtype=torch.int)
+        return spec, w, z, norm, zerr
 
     @classmethod
-    def get_ids(cls, dir, selection_fct=None):
-        """Select IDs from main specrum table that matches `selection_fct`
+    def query(cls, dir, fields=["PLATE", "MJD", "FIBERID", "Z", "Z_ERR"], selection_fct=None):
+        """Select fields from main specrum table for objects that match `selection_fct`
 
         NOTE: This function will download the file `specObj-dr16.fits` from the data
         archive. This file is *not* small...
@@ -418,13 +428,15 @@ class SDSS(Instrument):
         ----------
         dir: string
             Root directory for data storage
+        fields: list of string
+            Catalog field names to return
         selection_fct: callable
             Function to select matches from all items in the main table
 
         Returns
         -------
-        ids: `torch.tensor`, shape (N, 3)
-            SDSS plate, mjd, fiberid triple
+        fields: `torch.tensor`, shape (N, F)
+            Tensor of fields for the selected objects
 
         """
         main_file = os.path.join(dir, "specObj-dr16.fits")
@@ -451,13 +463,10 @@ class SDSS(Instrument):
         else:
             sel = selection_fct(specobj)
 
-        plate = specobj["PLATE"][sel]
-        mjd = specobj["MJD"][sel]
-        fiberid = specobj["FIBERID"][sel]
-        return tuple(zip(plate, mjd, fiberid))
+        return specobj[fields][sel]
 
     @classmethod
-    def augment_spectra(cls, batch, redshift=True, noise=True, mask=True, ratio=0.05):
+    def augment_spectra(cls, batch, redshift=True, noise=True, mask=True, ratio=0.05, z_new=None):
         """Augment spectra for greater diversity
 
         Parameters
@@ -470,6 +479,10 @@ class SDSS(Instrument):
             Whether to add noise to the spectrum (up to 0.2*max(spectrum))
         mask: bool
             Whether to block out a fraction (given by `ratio`) of the spectrum
+        ratio: float
+            Fraction of the spectrum that will be masked
+        z_new: float
+            Adopt this redshift for all spectra in the batch
 
         Returns
         -------
@@ -480,16 +493,18 @@ class SDSS(Instrument):
         z: `torch.tensor`, shape (N, )
             Altered redshift
         """
+
         spec, w, z = batch[:3]
         batch_size, spec_size = spec.shape
         device = spec.device
         wave_obs = cls._wave_obs.to(device)
 
         if redshift:
-            # uniform distribution of redshift offsets, width = z_lim
-            z_lim = 0.2
-            z_base = torch.relu(z - z_lim)
-            z_new = z_base + z_lim * (torch.rand(batch_size, device=device))
+            if z_new == None:
+                # uniform distribution of redshift offsets, width = z_lim
+                z_lim = 0.5
+                z_base = torch.relu(z-z_lim)
+                z_new = z_base+z_lim*(torch.rand(batch_size, device=device))
             # keep redshifts between 0 and 0.5
             z_new = torch.minimum(
                 torch.nn.functional.relu(z_new),

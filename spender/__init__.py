@@ -22,7 +22,7 @@ def load_model(filename, instrument, device=None):
     model: `torch.nn.Module`
         The default :class`SpectrumAutoencoder` model loaded from file
     loss: `torch.tensor`
-        Traning and validation loss for this model
+        Training and validation loss for this model
     """
     assert isinstance(instrument, Instrument)
     model_struct = torch.load(filename, map_location=device)
@@ -51,6 +51,11 @@ def load_model(filename, instrument, device=None):
         model_struct["model"] = OrderedDict(
             [(k.replace("mlp.mlp", "mlp"), v) for k, v in model_struct["model"].items()]
         )
+
+    # backwards compat: remove z (=last) input from encoder mlp
+    if model_struct['model']['encoder.mlp.0.weight'].shape[1] == 257:
+        model_struct['model']['encoder.mlp.0.weight'] = model_struct['model']['encoder.mlp.0.weight'][:,:-1]
+
     # backwards compat: add instrument to encoder
     try:
         model.load_state_dict(model_struct["model"], strict=False)
