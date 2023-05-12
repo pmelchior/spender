@@ -1,15 +1,19 @@
 #!/usr/bin/env python
 
-import time, argparse, os
-import numpy as np
+import argparse
 import functools
+import os
+import time
+
+import numpy as np
 import torch
-from torch import nn
-from torch import optim
 from accelerate import Accelerator
 from spender import SpectrumAutoencoder
 from spender.data.sdss import SDSS
 from spender.util import mem_report, resample_to_restframe
+
+# allows one to run fp16_train.py from home directory
+import sys;sys.path.insert(1, './')
 
 
 def prepare_train(seq,niter=1000):
@@ -237,8 +241,8 @@ def train(models,
         mem_report()
 
     ladder = build_ladder(train_sequence)
-    optimizer = optim.Adam(model_parameters, lr=lr, eps=1e-4)
-    scheduler = optim.lr_scheduler.OneCycleLR(optimizer, lr,
+    optimizer = torch.optim.Adam(model_parameters, lr=lr, eps=1e-4)
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, lr,
                                               total_steps=n_epoch)
 
     accelerator = Accelerator(mixed_precision='fp16')
