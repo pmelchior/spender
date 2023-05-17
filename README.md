@@ -35,32 +35,33 @@ Documentation and tutorials are forthcoming. In the meantime, check out `train/d
 
 In short, you can run spender like this:
 ```python
+import torch
 import spender
 from spender.data.sdss import SDSS
 
 # create the instrument
 sdss = SDSS()
 
-# load the model
-model, loss = spender.load_model(model_file, sdss)
+# load the model, set device as appropriate
+model, loss = spender.load_model(path_to_model_file, sdss, device='cpu')
 
-# get some SDSS spectra from the ids
+# get some SDSS spectra from the ids, store locally in data_path
 data_path = "./DATA"
 ids = ((412, 52254, 308), (412, 52250, 129))
-spec, w, z, ids, norm, zerr = SDSS.make_batch(data_path, ids)
+spec, w, z, norm, zerr = SDSS.make_batch(data_path, ids)
 
 # run spender end-to-end
 with torch.no_grad():
   spec_reco = model(spec, instrument=sdss, z=z)
 
 # for more fine-grained control, run spender's internal _forward method
-# which return the latents s, the model for the restframe and the observed spectrum
+# which return the latents s, the model for the restframe, and the observed spectrum
 with torch.no_grad():
   s, spec_rest, spec_reco = model._forward(spec, instrument=sdss, z=z)
 
-# to only encode into latents, using redshift as extra input
+# only encode into latents
 with torch.no_grad():
-  s = model.encode(spec, aux=z.unsqueeze(1))
+  s = model.encode(spec)
 ```
 
 Plotting the results of the above nicely shows what spender can do:

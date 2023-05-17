@@ -27,6 +27,11 @@ def load_model(filename, instrument, device=None):
     assert isinstance(instrument, Instrument)
     model_struct = torch.load(filename, map_location=device)
 
+    # if list of models, only use first one
+    if isinstance(model_struct["model"], (list, tuple)):
+        model_struct["model"] = model_struct["model"][0]
+
+
     # check if LSF is contained in model_struct
     try:
         kernel = model_struct["model"]["encoder.instrument.lsf.weight"].flatten()
@@ -37,11 +42,15 @@ def load_model(filename, instrument, device=None):
 
     wave_rest = model_struct["model"]["decoder.wave_rest"]
     n_latent = model_struct["model"]["decoder.mlp.0.weight"].shape[1]
+    
+    # activation function for decoder MLP: by default Speculator, but older models use LeakyReLU
+    act = None if "decoder.mlp.1.beta" in model_struct["model"].keys() else [torch.nn.LeakyReLU(), ] * 4
 
     model = SpectrumAutoencoder(
         instrument,
         wave_rest,
         n_latent=n_latent,
+        act=act,
     )
 
     # backwards compat: encoder.mlp instead of encoder.mlp.mlp
