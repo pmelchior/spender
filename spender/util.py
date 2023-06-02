@@ -8,7 +8,92 @@ import humanize
 import psutil
 import torch
 from torch.utils.data import IterableDataset
-from torchinterp1d import interp1d
+
+
+@torch.jit.script
+def interp1d_single(
+    x: torch.Tensor, y: torch.Tensor, target: torch.Tensor, mask: bool = True
+) -> torch.Tensor:
+    m = (y[1:] - y[:-1]) / (x[1:] - x[:-1])
+    b = y[:-1] - (m * x[:-1])
+
+    idx = torch.sum(torch.ge(target[:, None], x[None, :]), 1) - 1
+    idx = torch.clamp(idx, 0, len(m) - 1)
+
+    itp = m[idx] * target + b[idx]
+
+    if mask:
+        low_mask = torch.le(target, x[0])
+        high_mask = torch.ge(target, x[-1])
+        itp[low_mask] = y[0]
+        itp[high_mask] = y[-1]
+
+    return itp
+
+
+@torch.jit.script
+def interp1d(
+    x: torch.Tensor, y: torch.Tensor, target: torch.Tensor, mask: bool = True
+) -> torch.Tensor:
+    """One-dimensional linear interpolation. If x is not sorted, this will sort x for you.
+
+    Args:
+        x: the x-coordinates of the data points, must be increasing.
+        y: the y-coordinates of the data points, same length as `x`.
+        target: the x-coordinates at which to evaluate the interpolated values.
+        mask: whether to clamp target values outside of the range of x (i.e., don't extrapolate)
+
+    Returns:
+        the interpolated values, same size as `target`.
+    """
+    # check dimensions
+    if x.dim() == 1:
+        x = x.unsqueeze(0)
+    if y.dim() == 1:
+        y = y.unsqueeze(0)
+    if target.dim() == 1:
+        target = target.unsqueeze(0)
+
+    # check whether we need to broadcast x and y
+    assert (
+        x.shape[0] == y.shape[0] or x.shape[0] == 1 or y.shape[0] == 1
+    ), f"x and y must have same length, or either x or y must have length 1, got {x.shape} and {y.shape}"
+
+    if y.shape[0] == 1 and x.shape[0] > 1:
+        y = y.expand(x.shape[0], -1)
+        bs = x.shape[0]
+    elif x.shape[0] == 1 and y.shape[0] > 1:
+        x = x.expand(y.shape[0], -1)
+        bs = y.shape[0]
+    else:
+        bs = x.shape[0]
+
+    # check whether we need to broadcast target
+    assert (
+        target.shape[0] == bs or target.shape[0] == 1
+    ), f"target must have same length as x and y, or length 1, got {target.shape} and {x.shape}"
+
+    if target.shape[0] == 1:
+        target = target.expand(bs, -1)
+
+    # check for sorting
+    if not torch.all(torch.diff(x, dim=-1) > 0):
+        # if reverse-sorted, just flip
+        if torch.all(torch.diff(x, dim=-1) < 0):
+            x = x.flip(-1)
+            y = y.flip(-1)
+        else:
+            # sort x and y if not already sorted
+            x, idx = torch.sort(x, dim=-1)
+            y = y[torch.arange(bs)[:, None], idx]
+
+    # this is apparantly how parallelism works in pytorch?
+    futures = [
+        torch.jit.fork(interp1d_single, x[i], y[i], target[i], mask) for i in range(bs)
+    ]
+    itp = torch.stack([torch.jit.wait(f) for f in futures])
+
+    return itp
 
 
 ############ Functions for creating batched files ###############
