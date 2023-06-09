@@ -156,8 +156,8 @@ class DESI(Instrument):
         ----------
         dir: string
             Root directory for data storage
-        ids: list of (plate, mjd, fiberid)
-            Identifier of spectrum
+        ids: list of (survey, program, healpix, target)
+            Identifier of healpix  
         tag: string
             Name to specify the batch file name
         batch_size: int
@@ -168,12 +168,39 @@ class DESI(Instrument):
         None
 
         """
+        for _id in ids: 
+            survey, prog, hpix, target = _id
+
+            f = cls.get_spectra(dir, survey, prog, hpix, return_file=True)
+
+            spec, w, norm, z, zerr = cls.prepare_spectra(f, target=target)
+
+            N = spec.shape[0]
+            
+            if new_batch: 
+                if N > batch_size: 
+                    batch = [spec[:batch_size], w[:batch_size], norm[:batch_size], z[:batch_size], zerr[:batch_size]]
+                    new_batch = False
+                    next_batch = [spec[batch_size:], w[batch_size:], norm[batch_size:], z[batch_size:], zerr[batch_size:]]
+                elif N == batch_size
+                    batch = [spec, w, norm, z, zerr]
+                    new_batch = True 
+                else: 
+                    next_batch = [spec, w, norm, z, zerr]
+                    new_batch = False
+            else: 
+                next_batch 
+
+            if new_batch: 
+
+
         N = len(ids)
         idx = np.arange(0, N, batch_size)
         batches = np.array_split(ids, idx[1:])
         for counter, ids_ in zip(idx, batches):
             print(f"saving batch {counter} / {N}")
             batch = cls.make_batch(dir, ids_)
+
             cls.save_batch(dir, batch, tag=tag, counter=counter)
 
     @classmethod
@@ -279,13 +306,15 @@ class DESI(Instrument):
             # see https://arxiv.org/pdf/2208.08518.pdf Section 2.2 for details
             # on the bitmask 
             if survey == 'sv1': 
-                from desitarget.sv1.sv1.targetmask import desi_mask
+                from desitarget.sv1.sv1_targetmask import desi_mask
             elif survey == 'sv2': 
-                from desitarget.sv2.sv2.targetmask import desi_mask
+                from desitarget.sv2.sv2_targetmask import desi_mask
             elif survey == 'sv3': 
-                from desitarget.sv3.sv3.targetmask import desi_mask
+                from desitarget.sv3.sv3_targetmask import desi_mask
             else: 
                 raise ValueError("not included in EDR") 
+            if target.upper() == 'BGS': 
+                target = 'BGS_ANY'
             keep = keep & (meta['%s_DESI_TARGET' % survey.upper()] & desi_mask[target.upper()] > 0) 
     
         # read in data 
@@ -398,56 +427,8 @@ class DESI(Instrument):
                 spec[i] /= norm[i]
             w[i] *= norm[i]**2
 
-        return spec, w, norm, z, zerr
+        return spec[keep], w[keep], norm[keep], z[keep], zerr[keep]
     
-    @classmethod
-    def make_batch(cls, dir, fields):
-        """Make a batch of spectra from their IDs
-
-        Parameters
-        ----------
-        dir: string
-            Root directory for data storage
-        fields: list of (plate, mjd, fiberid, [z, z_err])
-            List of object qualifiers from query()
-
-        Returns
-        -------
-        spec: `torch.tensor`, shape (N, L)
-            Normalized spectrum
-        w: `torch.tensor`, shape (N, L)
-            Inverse variance weights of normalized spectrum
-        z: `torch.tensor`, shape (N, )
-            Redshift from SDSS pipeline
-        norm: `torch.tensor`, shape (N, )
-            Normalization factor
-        zerr: torch.tensor`, shape (N, )
-            Redshift error from SDSS pipeline
-        """
-
-        N = len(fields)
-        L = len(cls._wave_obs)
-        spec = torch.empty((N, L))
-        w = torch.empty((N, L))
-        z = torch.empty(N)
-        id = torch.empty((N, 3), dtype=torch.int)
-        norm = torch.empty(N)
-        zerr = torch.empty(N)
-        for i in range(N):
-            if len(fields[i]) == 5:
-                plate, mjd, fiberid, z_, zerr_ = fields[i]
-                f = cls.get_spectrum(dir, plate, mjd, fiberid, return_file=True)
-                spec[i], w[i], norm[i] = cls.prepare_spectra(f, z_)
-                z[i], zerr[i] = z_, zerr_
-            elif len(fields[i]) == 3:
-                plate, mjd, fiberid = fields[i]
-                f = cls.get_spectrum(dir, plate, mjd, fiberid, return_file=True)
-                spec[i], w[i], norm[i], z[i], zerr[i] = cls.prepare_spectra(f)
-            else:
-                raise AttributeError("fields must contain (plate, mjd, fiberid, z, z_err) or (plate, mjd, fiberid)")
-            id[i] = torch.tensor((plate, mjd, fiberid), dtype=torch.int)
-        return spec, w, z, norm, zerr
-
     @classmethod
     def query(cls, dir, fields=["PLATE", "MJD", "FIBERID", "Z", "Z_ERR"], selection_fct=None):
         """Select fields from main specrum table for objects that match `selection_fct`
