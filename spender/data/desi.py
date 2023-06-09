@@ -168,6 +168,8 @@ class DESI(Instrument):
         None
 
         """
+        N, counter, new_batch = 0, 0, True
+        i0, i1 = 0, batch_size 
         for _id in ids: 
             survey, prog, hpix, target = _id
 
@@ -175,33 +177,14 @@ class DESI(Instrument):
 
             spec, w, norm, z, zerr = cls.prepare_spectra(f, target=target)
 
-            N = spec.shape[0]
-            
-            if new_batch: 
-                if N > batch_size: 
-                    batch = [spec[:batch_size], w[:batch_size], norm[:batch_size], z[:batch_size], zerr[:batch_size]]
-                    new_batch = False
-                    next_batch = [spec[batch_size:], w[batch_size:], norm[batch_size:], z[batch_size:], zerr[batch_size:]]
-                elif N == batch_size
-                    batch = [spec, w, norm, z, zerr]
-                    new_batch = True 
-                else: 
-                    next_batch = [spec, w, norm, z, zerr]
-                    new_batch = False
-            else: 
-                next_batch 
+            N += spec.shape[0]
+            while N > batch_size: 
+                batch = [spec[i0:i1], w[i0:i1], norm[i0:i1], z[i0:i1], zerr[i0:i1]]
 
-            if new_batch: 
-
-
-        N = len(ids)
-        idx = np.arange(0, N, batch_size)
-        batches = np.array_split(ids, idx[1:])
-        for counter, ids_ in zip(idx, batches):
-            print(f"saving batch {counter} / {N}")
-            batch = cls.make_batch(dir, ids_)
-
-            cls.save_batch(dir, batch, tag=tag, counter=counter)
+                print(f"saving batch {counter} / {N}")
+                cls.save_batch(dir, batch, tag=tag, counter=counter)
+                counter += 1 
+                N -= batch_size 
 
     @classmethod
     def get_spectra(cls, dir, survey, prog, hpix, return_file=False):
