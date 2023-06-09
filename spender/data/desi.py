@@ -177,7 +177,7 @@ class DESI(Instrument):
             cls.save_batch(dir, batch, tag=tag, counter=counter)
 
     @classmethod
-    def get_spectrum(cls, dir, survey, prog, hpix, return_file=False):
+    def get_spectra(cls, dir, survey, prog, hpix, return_file=False):
         """Download and prepare spectrum for analysis
 
         Parameters
@@ -222,7 +222,7 @@ class DESI(Instrument):
         return cls.prepare_spectra(flocal)
 
     @classmethod
-    def prepare_spectra(cls, filename, z=None):
+    def prepare_spectra(cls, filename, target=None):
         """Prepare spectra in DESI healpix for analysis
 
         This method creates an extended mask, using the original DESI mask and
@@ -240,9 +240,8 @@ class DESI(Instrument):
         ---------
         filename: string
             Path to local file containing the spectrum
-        z: float or None
-            Redshift of the spectrum
-            If None, redshift and its error will be read from the file and returned
+        target: string
+            target class: BGS, LRG, ELG, QSO
 
         Returns
         -------
@@ -257,9 +256,37 @@ class DESI(Instrument):
         zerr: `torch.tensor`, shape (1, )
             Redshift error (only returned when argument z=None)
         """
+        # read spectra file
         hdulist = fits.open(filename)
         nhdu = len(hdulist) 
-        meta = hdulist[1].data # meta data 
+        survey = hdulist[0].header['SURVEY']
+        meta = aTable.Table.read(filename) # meta data 
+
+        # read redrock file 
+        rr = fits.open(filename.replace('coadd', 'redrock'))
+        # get redshift and error
+        z = torch.tensor(rr[1].data['Z'].astype(np.float32))
+        zerr = torch.tensor(rr[1].data['ZERR'].astype(np.float32))
+
+        keep = ((meta['COADD_FIBERSTATUS'] == 0) &                  # good fiber 
+                (meta['%s_DESI_TARGET' % survey.upper()] != 0) &    # is DESI target
+                (rr[1].data['ZWARN'] == 0) &                        # no warning flags
+                (rr[1].data['SPECTYPE'] == 'GALAXY') &              # is a galaxy according to redrock
+                (rr[1].data['ZERR'] < 0.0005 * (1. + rr[1].data['Z'])) & # low redshift error
+                (rr[1].data['DELTACHI2'] > 40))                     # chi2 difference with
+                                                                    # next best-fit is high
+        if target is not None: 
+            # see https://arxiv.org/pdf/2208.08518.pdf Section 2.2 for details
+            # on the bitmask 
+            if survey == 'sv1': 
+                from desitarget.sv1.sv1.targetmask import desi_mask
+            elif survey == 'sv2': 
+                from desitarget.sv2.sv2.targetmask import desi_mask
+            elif survey == 'sv3': 
+                from desitarget.sv3.sv3.targetmask import desi_mask
+            else: 
+                raise ValueError("not included in EDR") 
+            keep = keep & (meta['%s_DESI_TARGET' % survey.upper()] & desi_mask[target.upper()] > 0) 
     
         # read in data 
         _wave, _flux, _ivar, _mask, _res = {}, {}, {}, {}, {}
@@ -354,14 +381,6 @@ class DESI(Instrument):
         # remove regions around skylines
         w[:,cls._skyline_mask] = 0
 
-        extended_return = False
-        if z is None:
-            # read redrock file 
-            rr = fits.open(filename.replace('coadd', 'redrock'))
-            # get redshift and error
-            z = torch.tensor(rr[1].data['Z'].astype(np.float32))
-            zerr = torch.tensor(rr[1].data['ZERR'].astype(np.float32))
-            extended_return = True
 
         # normalize spectra:
         norm = torch.zeros(ntarget)
@@ -379,9 +398,7 @@ class DESI(Instrument):
                 spec[i] /= norm[i]
             w[i] *= norm[i]**2
 
-        if extended_return:
-            return spec, w, norm, z, zerr
-        return spec, w, norm
+        return spec, w, norm, z, zerr
     
     @classmethod
     def make_batch(cls, dir, fields):
