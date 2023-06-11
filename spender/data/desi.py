@@ -216,25 +216,18 @@ class DESI(Instrument):
         -------
         Either the local file name or the prepared spectrum
         """
-        filename = "coadd-%s-%s-%i.fits" % (survey, prog, hpix)
-        dirname = os.path.join(dir, str(hpix))
-        flocal = os.path.join(dirname, filename)
-        # download spectra file    
-        if not os.path.isfile(flocal):
-            os.makedirs(dirname, exist_ok=True)
-            url = "%s/healpix/%s/%s/%s/%i/%s" % (cls._base_url, survey, prog,
-                    str(hpix)[:-2], hpix, filename)
-            print(f"downloading {url}")
-            urllib.request.urlretrieve(url, flocal)
 
-        # download redrock file    
-        frr= filename.replace('coadd', 'redrock') 
-        flrr = flocal.replace('coadd', 'redrock') 
-        if not os.path.isfile(flrr):
-            url = "%s/healpix/%s/%s/%s/%i/%s" % (cls._base_url, survey, prog,
-                    str(hpix)[:-2], hpix, frr)
-            print(f"downloading {url}")
-            urllib.request.urlretrieve(url, flrr)
+        for ftype in ['redrock', 'emline', 'qso_mgii', 'qso_qn', 'coadd']: 
+            filename = "%s-%s-%s-%i.fits" % (ftype, survey, prog, hpix)
+            dirname = os.path.join(dir, str(hpix))
+            flocal = os.path.join(dirname, filename)
+            # download spectra file    
+            if not os.path.isfile(flocal):
+                os.makedirs(dirname, exist_ok=True)
+                url = "%s/healpix/%s/%s/%s/%i/%s" % (cls._base_url, survey, prog,
+                        str(hpix)[:-2], hpix, filename)
+                print(f"downloading {url}")
+                urllib.request.urlretrieve(url, flocal)
 
         if return_file:
             return flocal
@@ -290,9 +283,7 @@ class DESI(Instrument):
         keep = ((meta['COADD_FIBERSTATUS'] == 0) &                  # good fiber 
                 (meta['%s_DESI_TARGET' % survey.upper()] != 0) &    # is DESI target
                 (rr[1].data['ZWARN'] == 0) &                        # no warning flags
-                (rr[1].data['SPECTYPE'] == 'GALAXY') &              # is a galaxy according to redrock
-                (rr[1].data['ZERR'] < 0.0005 * (1. + rr[1].data['Z'])) & # low redshift error
-                (rr[1].data['DELTACHI2'] > 40))                     # chi2 difference with
+                (rr[1].data['SPECTYPE'] == 'GALAXY'))               # is a galaxy according to redrock
                                                                     # next best-fit is high
         if target is not None: 
             # see https://arxiv.org/pdf/2208.08518.pdf Section 2.2 for details
@@ -307,7 +298,19 @@ class DESI(Instrument):
                 raise ValueError("not included in EDR") 
             if target.upper() == 'BGS': 
                 target = 'BGS_ANY'
+
             keep = keep & (meta['%s_DESI_TARGET' % survey.upper()] & desi_mask[target.upper()] > 0) 
+        
+            # redshift criteria for BGS and LRG. no additional criteria imposed
+            # for ELG and QSO. ELG requires OII flux SNR; QSO has
+            # afterburners... 
+            # see DESI Collaboration SV overivew paper 
+            if target.upper == 'BGS': 
+                keep = keep & (
+                        (rr[1].data['ZERR'] < 0.0005 * (1. + rr[1].data['Z'])) & # low redshift error
+                        (rr[1].data['DELTACHI2'] > 40))                         # chi2 difference with
+            elif target.upper == 'LRG': 
+                keep = keep & (rr[1].data['DELTACHI2'] > 15)                    # chi2 difference with
     
         # read in data 
         _wave, _flux, _ivar, _mask, _res = {}, {}, {}, {}, {}
@@ -422,7 +425,7 @@ class DESI(Instrument):
         return spec[keep], w[keep], norm[keep], z[keep], zerr[keep]
     
     @classmethod
-    def query(cls, dir, fields=["SURVEY", "PROGRAM", "HEALPIX"], selection_fct=None):
+    def query(cls, dir, target, fields=["SURVEY", "PROGRAM", "HEALPIX"], selection_fct=None):
         """Select SURVEY, PROGRAM, HEALPIX from healpix look up table for healpix that 
         match `selection_fct`. Look up table only includes information on
         TILEID, SURVEY, PROGRAM, PETAL_LOC, HEALPIX
@@ -452,13 +455,20 @@ class DESI(Instrument):
         print(f"opening {main_file}")
         thpix = aTable.Table.read(main_file)
 
+        if target in ['LRG', 'ELG', 'QSO']: 
+            program = 'dark'
+        elif target in ['BGS', 'MWS']: 
+            program = 'bright'
+
         if selection_fct is None:
             # apply default selections
             sel = ((thpix['SURVEY'] == 'sv3') & 
-                    (thpix['PROGRAM'] == 'bright')) 
+                    (thpix['PROGRAM'] == program)) 
         else:
             sel = selection_fct(thpix)
 
         _, uind = np.unique(thpix[sel]['HEALPIX'], return_index=True)
-
-        return thpix[fields][sel][uind]
+    
+        out_tab = thpix[fields][sel][uind]
+        out_tab['TARGET'] = target
+        return out_tab
