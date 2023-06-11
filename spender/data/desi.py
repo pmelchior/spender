@@ -168,23 +168,32 @@ class DESI(Instrument):
         None
 
         """
-        N, counter, new_batch = 0, 0, True
-        i0, i1 = 0, batch_size 
+        counter, new_batch = 0, True
         for _id in ids: 
             survey, prog, hpix, target = _id
 
             f = cls.get_spectra(dir, survey, prog, hpix, return_file=True)
 
             spec, w, norm, z, zerr = cls.prepare_spectra(f, target=target)
-
-            N += spec.shape[0]
+            if new_batch: 
+                batches = [spec, w, norm, z, zerr]
+            else: 
+                batches[0] = torch.concatenate([batch[0], spec], axis=0) 
+                batches[1] = torch.concatenate([batch[1], w], axis=0) 
+                batches[2] = torch.concatenate([batch[2], norm], axis=0) 
+                batches[3] = torch.concatenate([batch[3], z], axis=0) 
+                batches[4] = torch.concatenate([batch[4], zerr], axis=0) 
+            
+            N = batches[0].shape[0]
             while N > batch_size: 
-                batch = [spec[i0:i1], w[i0:i1], norm[i0:i1], z[i0:i1], zerr[i0:i1]]
+                batch = [_batch[:batch_size] for _batch in batches]
 
-                print(f"saving batch {counter} / {N}")
+                print(f"saving batch {counter}")
                 cls.save_batch(dir, batch, tag=tag, counter=counter)
                 counter += 1 
                 N -= batch_size 
+
+                batches = [_batch[batch_size:] for _batch in batches]
 
     @classmethod
     def get_spectra(cls, dir, survey, prog, hpix, return_file=False):
