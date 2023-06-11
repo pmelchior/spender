@@ -422,11 +422,11 @@ class DESI(Instrument):
         return spec[keep], w[keep], norm[keep], z[keep], zerr[keep]
     
     @classmethod
-    def query(cls, dir, fields=["PLATE", "MJD", "FIBERID", "Z", "Z_ERR"], selection_fct=None):
-        """Select fields from main specrum table for objects that match `selection_fct`
+    def query(cls, dir, fields=["SURVEY", "PROGRAM", "HEALPIX"], selection_fct=None):
+        """Select SURVEY, PROGRAM, HEALPIX from healpix look up table for healpix that 
+        match `selection_fct`. Look up table only includes information on
+        TILEID, SURVEY, PROGRAM, PETAL_LOC, HEALPIX
 
-        NOTE: This function will download the file `specObj-dr16.fits` from the data
-        archive. This file is *not* small...
 
         Parameters
         ----------
@@ -440,112 +440,25 @@ class DESI(Instrument):
         Returns
         -------
         fields: `torch.tensor`, shape (N, F)
-            Tensor of fields for the selected objects
+            Tensor of fields for the selected healpix 
 
         """
-        main_file = os.path.join(dir, "specObj-dr16.fits")
+        main_file = os.path.join(dir, "tilepix.fits") 
         if not os.path.isfile(main_file):
-            url = "https://data.sdss.org/sas/dr16/sdss/spectro/redux/specObj-dr16.fits"
-            print(f"downloading {url}, this will take a while...")
+            url = "https://data.desi.lbl.gov/public/edr/spectro/redux/fuji/healpix/tilepix.fits"
+            print(f"downloading {url}")
             urllib.request.urlretrieve(url, main_file)
 
         print(f"opening {main_file}")
-        specobj = aTable.Table.read(main_file)
+        thpix = aTable.Table.read(main_file)
 
         if selection_fct is None:
             # apply default selections
-            classname = cls.__mro__[0].__name__.lower()
-            sel = (
-                (specobj["SURVEY"] == f"{classname}  ")
-                & (specobj["PLATEQUALITY"] == "good    ")  # SDSS survey
-                & (specobj["TARGETTYPE"] == "SCIENCE ")
-            )
-            sel &= (specobj["Z"] > 0.0) & (specobj["Z_ERR"] < 1e-4)
-            sel &= (specobj["SOURCETYPE"] == "GALAXY                   ") & (
-                specobj["CLASS"] == "GALAXY"
-            )
+            sel = ((thpix['SURVEY'] == 'sv3') & 
+                    (thpix['PROGRAM'] == 'bright')) 
         else:
-            sel = selection_fct(specobj)
+            sel = selection_fct(thpix)
 
-        return specobj[fields][sel]
+        _, uind = np.unique(thpix[sel]['HEALPIX'], return_index=True)
 
-    @classmethod
-    def augment_spectra(cls, batch, redshift=True, noise=True, mask=True, ratio=0.05, z_new=None):
-        """Augment spectra for greater diversity
-
-        Parameters
-        ----------
-        batch: `torch.tensor`, shape (N, L)
-            Spectrum batch
-        redshift: bool
-            Modify redshift by up to 0.2 (keeping it within 0...0.5)
-        noise: bool
-            Whether to add noise to the spectrum (up to 0.2*max(spectrum))
-        mask: bool
-            Whether to block out a fraction (given by `ratio`) of the spectrum
-        ratio: float
-            Fraction of the spectrum that will be masked
-        z_new: float
-            Adopt this redshift for all spectra in the batch
-
-        Returns
-        -------
-        spec: `torch.tensor`, shape (N, L)
-            Altered spectrum
-        w: `torch.tensor`, shape (N, L)
-            Altered inverse variance weights of spectrum
-        z: `torch.tensor`, shape (N, )
-            Altered redshift
-        """
-
-        spec, w, z = batch[:3]
-        batch_size, spec_size = spec.shape
-        device = spec.device
-        wave_obs = cls._wave_obs.to(device)
-
-        if redshift:
-            if z_new == None:
-                # uniform distribution of redshift offsets, width = z_lim
-                z_lim = 0.5
-                z_base = torch.relu(z-z_lim)
-                z_new = z_base+z_lim*(torch.rand(batch_size, device=device))
-            # keep redshifts between 0 and 0.5
-            z_new = torch.minimum(
-                torch.nn.functional.relu(z_new),
-                0.5 * torch.ones(batch_size, device=device),
-            )
-            zfactor = (1 + z_new) / (1 + z)
-            wave_redshifted = (wave_obs.unsqueeze(1) * zfactor).T
-
-            # redshift linear interpolation
-            spec_new = interp1d(wave_redshifted, spec, wave_obs)
-            # ensure extrapolated values have zero weights
-            w_new = torch.clone(w)
-            w_new[:, 0] = 0
-            w_new[:, -1] = 0
-            w_new = interp1d(wave_redshifted, w_new, wave_obs)
-            w_new = torch.nn.functional.relu(w_new)
-        else:
-            spec_new, w_new, z_new = torch.clone(spec), torch.clone(w), z
-
-        # add noise
-        if noise:
-            sigma = 0.2 * torch.max(spec, 1, keepdim=True)[0]
-            noise = sigma * torch.distributions.Normal(0, 1).sample(spec.shape).to(
-                device
-            )
-            noise_mask = (
-                torch.distributions.Uniform(0, 1).sample(spec.shape).to(device) > ratio
-            )
-            noise[noise_mask] = 0
-            spec_new += noise
-            # add variance in quadrature, avoid division by 0
-            w_new = 1 / (1 / (w_new + 1e-6) + noise**2)
-
-        if mask:
-            length = int(spec_size * ratio)
-            start = torch.randint(0, spec_size - length, (1,)).item()
-            spec_new[:, start : start + length] = 0
-            w_new[:, start : start + length] = 0
-
-        return spec_new, w_new, z_new
+        return thpix[fields][sel][uind]
