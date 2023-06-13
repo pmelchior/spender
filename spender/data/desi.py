@@ -22,7 +22,7 @@ class DESI(Instrument):
     to download and organize the spectra from the EDR release.
     """
 
-    _wave_obs = torch.linspace(3600., 9824.8, 7781)
+    _wave_obs = torch.linspace(3600., 9824., 7781,dtype=torch.float64)
     _skyline_mask = get_skyline_mask(_wave_obs)
     _base_url = "https://data.desi.lbl.gov/public/edr/spectro/redux/fuji/" # this should be public on Tuesday 
 
@@ -139,7 +139,7 @@ class DESI(Instrument):
 
         """
         if tag is None:
-            tag = f"chunk{len(batch)}"
+            tag = f"chunk{len(batch[0])}"
         if counter is None:
             counter = ""
         classname = cls.__mro__[0].__name__
@@ -339,7 +339,9 @@ class DESI(Instrument):
             wave = np.append(wave, _wave[b][_wave[b] > wave[-1]+tolerance])
         nwave = wave.size
         ntarget = _flux['b'].shape[0]
-
+        check_agreement = torch.abs(torch.from_numpy(wave)-cls._wave_obs)
+        if check_agreement.max()>tolerance:
+            print("Warning: input wavelength grids inconsistent with class variable wave_obs!")
         # check alignment, caching band wavelength grid indices as we go
         windict = {}
         number_of_overlapping_cameras = np.zeros(nwave)
@@ -374,7 +376,7 @@ class DESI(Instrument):
             for i in range(ntarget):
                 ivar_unmasked[i,windices] += np.sum(_ivar[b][i],axis=0)
                 ivar[i,windices] += _ivar[b][i] * (_mask[b][i] == 0)
-                flux[i,windices] += ivar[i,windices] * _flux[b][i]
+                flux[i,windices] += _ivar[b][i] * (_mask[b][i] == 0) * _flux[b][i]
                 for r in range(band_ndiag) :
                     rdata[i,r+(ndiag-band_ndiag)//2,windices] += (_ivar[b][i]*_res[b][i,r])
 
