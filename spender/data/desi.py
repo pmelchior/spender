@@ -5,8 +5,6 @@ import urllib.request
 from functools import partial
 
 import requests
-import io
-from PIL import Image
 
 import astropy.io.fits as fits
 import astropy.table as aTable
@@ -503,20 +501,20 @@ class DESI(Instrument):
     def get_image(
         cls,
         target_id: Optional[int] = None,
+        dir: Optional[str] = None,
         ra: Optional[float] = None,
         dec: Optional[float] = None,
         size: int = 256,
         pixscale: float = 0.262,
         bands: str = "griz",
-        catalog_file: str = "/scratch/gpfs/js5013/data/BGS_ANY_full.provabgs.sv3.v0.reformat.hdf5",
-    ) -> Image.Image:
+    ) -> bytes:
         """
         Searches the Legacy Survey DR10 (which includes DECaLS, BASS and MzLS) for a JPEG cutout image.
 
         Parameters
         ==========
         one of:
-            - target_id (DESI ID) and catalog_file (PROVABGS HDF5 filepath)
+            - target_id (DESI ID) and dir (directory containing the PROVABGS HDF5 file)
             - ra (deg) and dec (deg)
         size: image h/w in pixels, largest is 512
         pixscale: arcsec, 0.262" is native resolution
@@ -527,23 +525,20 @@ class DESI(Instrument):
         PIL image
         """
         if target_id is not None:
-            assert (
-                catalog_file is not None
-            ), "Must provide catalog_file if target_id is not None"
+            assert dir is not None, "Must provide dir if target_id is not None"
+            catalog_file = os.path.join(dir, "BGS_ANY_full.provabgs.sv3.v0.hdf5")
             with h5py.File(catalog_file, "r") as f:
-                selection = f["TARGETID"][:] == target_id
+                selection = f["__astropy_table__"]["TARGETID"][:] == target_id
                 assert (
                     selection.sum() > 0
                 ), f"target_id {target_id} not found in {catalog_file}"
-                ra = f["RA"][selection][0]
-                dec = f["DEC"][selection][0]
+                ra = f["__astropy_table__"]["RA"][selection][0]
+                dec = f["__astropy_table__"]["DEC"][selection][0]
         else:
             assert (
                 ra is not None and dec is not None
-            ), "Must provide ra and dec if target_id is None"
+            ), "Must provide ra and dec if target_id and dir are None"
 
         url = f"https://www.legacysurvey.org/viewer/jpeg-cutout?ra={ra}&dec={dec}&layer=ls-dr10&size={size}&pixscale={pixscale}&bands={bands}"
         r = requests.get(url)
-        image_stream = io.BytesIO(r.content)
-        image = Image.open(image_stream)
-        return image
+        return r.content
