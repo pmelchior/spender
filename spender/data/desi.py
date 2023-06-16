@@ -3,6 +3,10 @@ import os
 import urllib.request
 from functools import partial
 
+import requests
+import io
+from PIL import Image
+
 import astropy.io.fits as fits
 import astropy.table as aTable
 import numpy as np
@@ -22,9 +26,9 @@ class DESI(Instrument):
     to download and organize the spectra from the EDR release.
     """
 
-    _wave_obs = torch.linspace(3600., 9824., 7781,dtype=torch.float64)
+    _wave_obs = torch.linspace(3600.0, 9824.0, 7781, dtype=torch.float64)
     _skyline_mask = get_skyline_mask(_wave_obs)
-    _base_url = "https://data.desi.lbl.gov/public/edr/spectro/redux/fuji/" # this should be public on Tuesday 
+    _base_url = "https://data.desi.lbl.gov/public/edr/spectro/redux/fuji/"  # this should be public on Tuesday
 
     def __init__(self, lsf=None, calibration=None):
         """Create instrument
@@ -157,7 +161,7 @@ class DESI(Instrument):
         dir: string
             Root directory for data storage
         ids: list of (survey, program, healpix, target)
-            Identifier of healpix  
+            Identifier of healpix
         tag: string
             Name to specify the batch file name
         batch_size: int
@@ -169,29 +173,29 @@ class DESI(Instrument):
 
         """
         counter, new_batch = 0, True
-        for _id in ids: 
+        for _id in ids:
             survey, prog, hpix, target = _id
 
             f = cls.get_spectra(dir, survey, prog, hpix, return_file=True)
 
             spec, w, norm, z, zerr = cls.prepare_spectra(f, target=target)
-            if new_batch: 
+            if new_batch:
                 batches = [spec, w, norm, z, zerr]
-            else: 
-                batches[0] = torch.concatenate([batch[0], spec], axis=0) 
-                batches[1] = torch.concatenate([batch[1], w], axis=0) 
-                batches[2] = torch.concatenate([batch[2], norm], axis=0) 
-                batches[3] = torch.concatenate([batch[3], z], axis=0) 
-                batches[4] = torch.concatenate([batch[4], zerr], axis=0) 
-            
+            else:
+                batches[0] = torch.concatenate([batch[0], spec], axis=0)
+                batches[1] = torch.concatenate([batch[1], w], axis=0)
+                batches[2] = torch.concatenate([batch[2], norm], axis=0)
+                batches[3] = torch.concatenate([batch[3], z], axis=0)
+                batches[4] = torch.concatenate([batch[4], zerr], axis=0)
+
             N = batches[0].shape[0]
-            while N > batch_size: 
+            while N > batch_size:
                 batch = [_batch[:batch_size] for _batch in batches]
 
                 print(f"saving batch {counter}")
                 cls.save_batch(dir, batch, tag=tag, counter=counter)
-                counter += 1 
-                N -= batch_size 
+                counter += 1
+                N -= batch_size
 
                 batches = [_batch[batch_size:] for _batch in batches]
 
@@ -208,7 +212,7 @@ class DESI(Instrument):
         prog: string
             dark/bright
         hpix: int
-            healipx number 
+            healipx number
         return_file: bool
             Whether to return the local file name or the prepared spectrum
 
@@ -217,15 +221,21 @@ class DESI(Instrument):
         Either the local file name or the prepared spectrum
         """
 
-        for ftype in ['redrock', 'emline', 'qso_mgii', 'qso_qn', 'coadd']: 
+        for ftype in ["redrock", "emline", "qso_mgii", "qso_qn", "coadd"]:
             filename = "%s-%s-%s-%i.fits" % (ftype, survey, prog, hpix)
             dirname = os.path.join(dir, str(hpix))
             flocal = os.path.join(dirname, filename)
-            # download spectra file    
+            # download spectra file
             if not os.path.isfile(flocal):
                 os.makedirs(dirname, exist_ok=True)
-                url = "%s/healpix/%s/%s/%s/%i/%s" % (cls._base_url, survey, prog,
-                        str(hpix)[:-2], hpix, filename)
+                url = "%s/healpix/%s/%s/%s/%i/%s" % (
+                    cls._base_url,
+                    survey,
+                    prog,
+                    str(hpix)[:-2],
+                    hpix,
+                    filename,
+                )
                 print(f"downloading {url}")
                 urllib.request.urlretrieve(url, flocal)
 
@@ -270,165 +280,177 @@ class DESI(Instrument):
         """
         # read spectra file
         hdulist = fits.open(filename)
-        nhdu = len(hdulist) 
-        survey = hdulist[0].header['SURVEY']
-        meta = aTable.Table.read(filename) # meta data 
+        nhdu = len(hdulist)
+        survey = hdulist[0].header["SURVEY"]
+        meta = aTable.Table.read(filename)  # meta data
 
-        # read redrock file 
-        rr = fits.open(filename.replace('coadd', 'redrock'))
+        # read redrock file
+        rr = fits.open(filename.replace("coadd", "redrock"))
         # get redshift and error
-        z = torch.tensor(rr[1].data['Z'].astype(np.float32))
-        zerr = torch.tensor(rr[1].data['ZERR'].astype(np.float32))
+        z = torch.tensor(rr[1].data["Z"].astype(np.float32))
+        zerr = torch.tensor(rr[1].data["ZERR"].astype(np.float32))
 
-        keep = ((meta['COADD_FIBERSTATUS'] == 0) &                  # good fiber 
-                (meta['%s_DESI_TARGET' % survey.upper()] != 0) &    # is DESI target
-                (rr[1].data['ZWARN'] == 0) &                        # no warning flags
-                (rr[1].data['SPECTYPE'] == 'GALAXY'))               # is a galaxy according to redrock
-                                                                    # next best-fit is high
-        if target is not None: 
+        keep = (
+            (meta["COADD_FIBERSTATUS"] == 0)
+            & (meta["%s_DESI_TARGET" % survey.upper()] != 0)  # good fiber
+            & (rr[1].data["ZWARN"] == 0)  # is DESI target
+            & (rr[1].data["SPECTYPE"] == "GALAXY")  # no warning flags
+        )  # is a galaxy according to redrock
+        # next best-fit is high
+        if target is not None:
             # see https://arxiv.org/pdf/2208.08518.pdf Section 2.2 for details
-            # on the bitmask 
-            if survey == 'sv1': 
+            # on the bitmask
+            if survey == "sv1":
                 from desitarget.sv1.sv1_targetmask import desi_mask
-            elif survey == 'sv2': 
+            elif survey == "sv2":
                 from desitarget.sv2.sv2_targetmask import desi_mask
-            elif survey == 'sv3': 
+            elif survey == "sv3":
                 from desitarget.sv3.sv3_targetmask import desi_mask
-            else: 
-                raise ValueError("not included in EDR") 
-            if target.upper() == 'BGS': 
-                target = 'BGS_ANY'
+            else:
+                raise ValueError("not included in EDR")
+            if target.upper() == "BGS":
+                target = "BGS_ANY"
 
-            keep = keep & (meta['%s_DESI_TARGET' % survey.upper()] & desi_mask[target.upper()] > 0) 
-        
+            keep = keep & (
+                meta["%s_DESI_TARGET" % survey.upper()] & desi_mask[target.upper()] > 0
+            )
+
             # redshift criteria for BGS and LRG. no additional criteria imposed
             # for ELG and QSO. ELG requires OII flux SNR; QSO has
-            # afterburners... 
-            # see DESI Collaboration SV overivew paper 
-            if target.upper == 'BGS': 
+            # afterburners...
+            # see DESI Collaboration SV overivew paper
+            if target.upper == "BGS":
                 keep = keep & (
-                        (rr[1].data['ZERR'] < 0.0005 * (1. + rr[1].data['Z'])) & # low redshift error
-                        (rr[1].data['DELTACHI2'] > 40))                         # chi2 difference with
-            elif target.upper == 'LRG': 
-                keep = keep & (rr[1].data['DELTACHI2'] > 15)                    # chi2 difference with
-    
-        # read in data 
+                    (rr[1].data["ZERR"] < 0.0005 * (1.0 + rr[1].data["Z"]))
+                    & (rr[1].data["DELTACHI2"] > 40)  # low redshift error
+                )  # chi2 difference with
+            elif target.upper == "LRG":
+                keep = keep & (rr[1].data["DELTACHI2"] > 15)  # chi2 difference with
+
+        # read in data
         _wave, _flux, _ivar, _mask, _res = {}, {}, {}, {}, {}
-        for h in range(2, nhdu): 
-            if 'WAVELENGTH' in hdulist[h].header['EXTNAME']: 
-                band = hdulist[h].header['EXTNAME'].split('_')[0].lower()
+        for h in range(2, nhdu):
+            if "WAVELENGTH" in hdulist[h].header["EXTNAME"]:
+                band = hdulist[h].header["EXTNAME"].split("_")[0].lower()
                 _wave[band] = hdulist[h].data
-            if 'FLUX' in hdulist[h].header['EXTNAME']: 
-                band = hdulist[h].header['EXTNAME'].split('_')[0].lower() 
+            if "FLUX" in hdulist[h].header["EXTNAME"]:
+                band = hdulist[h].header["EXTNAME"].split("_")[0].lower()
                 _flux[band] = hdulist[h].data
-            if 'IVAR' in hdulist[h].header['EXTNAME']: 
-                band = hdulist[h].header['EXTNAME'].split('_')[0].lower() 
+            if "IVAR" in hdulist[h].header["EXTNAME"]:
+                band = hdulist[h].header["EXTNAME"].split("_")[0].lower()
                 _ivar[band] = hdulist[h].data
-            if 'MASK' in hdulist[h].header['EXTNAME']: 
-                band = hdulist[h].header['EXTNAME'].split('_')[0].lower() 
+            if "MASK" in hdulist[h].header["EXTNAME"]:
+                band = hdulist[h].header["EXTNAME"].split("_")[0].lower()
                 _mask[band] = hdulist[h].data
-            if 'RESOLUTION' in hdulist[h].header['EXTNAME']: 
-                band = hdulist[h].header['EXTNAME'].split('_')[0].lower() 
+            if "RESOLUTION" in hdulist[h].header["EXTNAME"]:
+                band = hdulist[h].header["EXTNAME"].split("_")[0].lower()
                 _res[band] = hdulist[h].data
 
-        # coadd the b, r, z arm spectra (scraped from 
-        # https://github.com/desihub/desispec/blob/main/py/desispec/coaddition.py#L529) 
-        tolerance=0.0001 #A , tolerance
-        wave = _wave['b']
-        for b in ['b', 'r', 'z']:
-            wave = np.append(wave, _wave[b][_wave[b] > wave[-1]+tolerance])
+        # coadd the b, r, z arm spectra (scraped from
+        # https://github.com/desihub/desispec/blob/main/py/desispec/coaddition.py#L529)
+        tolerance = 0.0001  # A , tolerance
+        wave = _wave["b"]
+        for b in ["b", "r", "z"]:
+            wave = np.append(wave, _wave[b][_wave[b] > wave[-1] + tolerance])
         nwave = wave.size
-        ntarget = _flux['b'].shape[0]
-        check_agreement = torch.abs(torch.from_numpy(wave)-cls._wave_obs)
-        if check_agreement.max()>tolerance:
-            print("Warning: input wavelength grids inconsistent with class variable wave_obs!")
+        ntarget = _flux["b"].shape[0]
+        check_agreement = torch.abs(torch.from_numpy(wave) - cls._wave_obs)
+        if check_agreement.max() > tolerance:
+            print(
+                "Warning: input wavelength grids inconsistent with class variable wave_obs!"
+            )
         # check alignment, caching band wavelength grid indices as we go
         windict = {}
         number_of_overlapping_cameras = np.zeros(nwave)
-        for b in ['b', 'r', 'z']:
+        for b in ["b", "r", "z"]:
             imin = np.argmin(np.abs(_wave[b][0] - wave))
-            windices = np.arange(imin, imin+len(_wave[b]), dtype=int)
+            windices = np.arange(imin, imin + len(_wave[b]), dtype=int)
             dwave = _wave[b] - wave[windices]
 
             if np.any(np.abs(dwave) > tolerance):
-                msg = "Input wavelength grids (band '{}') are not aligned. Use --lin-step or --log10-step to resample to a common grid.".format(b)
+                msg = "Input wavelength grids (band '{}') are not aligned. Use --lin-step or --log10-step to resample to a common grid.".format(
+                    b
+                )
                 raise ValueError(msg)
             number_of_overlapping_cameras[windices] += 1
             windict[b] = windices
 
         # ndiag = max of all cameras
-        ndiag=0
-        for b in ['b', 'r', 'z']:
+        ndiag = 0
+        for b in ["b", "r", "z"]:
             ndiag = max(ndiag, _res[b].shape[1])
 
-        flux = np.zeros((ntarget, nwave), dtype=_flux['b'].dtype)
-        ivar = np.zeros((ntarget, nwave), dtype=_ivar['b'].dtype)
-        ivar_unmasked = np.zeros((ntarget, nwave), dtype=_ivar['b'].dtype)
-        mask = np.zeros((ntarget, nwave), dtype=_mask['b'].dtype)
-        rdata = np.zeros((ntarget, ndiag, nwave), dtype=_res['b'].dtype)
+        flux = np.zeros((ntarget, nwave), dtype=_flux["b"].dtype)
+        ivar = np.zeros((ntarget, nwave), dtype=_ivar["b"].dtype)
+        ivar_unmasked = np.zeros((ntarget, nwave), dtype=_ivar["b"].dtype)
+        mask = np.zeros((ntarget, nwave), dtype=_mask["b"].dtype)
+        rdata = np.zeros((ntarget, ndiag, nwave), dtype=_res["b"].dtype)
 
-        for b in ['b', 'r', 'z']:
+        for b in ["b", "r", "z"]:
             # indices
             windices = windict[b]
 
             band_ndiag = _res[b].shape[1]
 
             for i in range(ntarget):
-                ivar_unmasked[i,windices] += np.sum(_ivar[b][i],axis=0)
-                ivar[i,windices] += _ivar[b][i] * (_mask[b][i] == 0)
-                flux[i,windices] += _ivar[b][i] * (_mask[b][i] == 0) * _flux[b][i]
-                for r in range(band_ndiag) :
-                    rdata[i,r+(ndiag-band_ndiag)//2,windices] += (_ivar[b][i]*_res[b][i,r])
+                ivar_unmasked[i, windices] += np.sum(_ivar[b][i], axis=0)
+                ivar[i, windices] += _ivar[b][i] * (_mask[b][i] == 0)
+                flux[i, windices] += _ivar[b][i] * (_mask[b][i] == 0) * _flux[b][i]
+                for r in range(band_ndiag):
+                    rdata[i, r + (ndiag - band_ndiag) // 2, windices] += (
+                        _ivar[b][i] * _res[b][i, r]
+                    )
 
                 # directly copy mask where no overlap
-                jj = (number_of_overlapping_cameras[windices] == 1)
-                mask[i,windices[jj]] = _mask[b][i][jj]
+                jj = number_of_overlapping_cameras[windices] == 1
+                mask[i, windices[jj]] = _mask[b][i][jj]
 
                 # 'and' in overlapping regions
-                jj = (number_of_overlapping_cameras[windices] > 1)
-                mask[i,windices[jj]] = mask[i,windices[jj]] & _mask[b][i][jj]
+                jj = number_of_overlapping_cameras[windices] > 1
+                mask[i, windices[jj]] = mask[i, windices[jj]] & _mask[b][i][jj]
 
-        for i in range(ntarget): 
-            ok = (ivar[i] > 0)
+        for i in range(ntarget):
+            ok = ivar[i] > 0
             if np.sum(ok) > 0:
                 flux[i][ok] /= ivar[i][ok]
-            ok = (ivar_unmasked[i] > 0)
-            if np.sum(ok) > 0 :
-                rdata[i][:,ok] /= ivar_unmasked[i][ok]
-        
+            ok = ivar_unmasked[i] > 0
+            if np.sum(ok) > 0:
+                rdata[i][:, ok] /= ivar_unmasked[i][ok]
+
         # apply bitmask, remove small values
         mask = mask.astype(bool) | (ivar <= 1e-6)
         ivar[mask] = 0
 
         # explicit type conversion to float32 to get to little endian
-        spec    = torch.from_numpy(flux.astype(np.float32))
-        w       = torch.from_numpy(ivar.astype(np.float32))
+        spec = torch.from_numpy(flux.astype(np.float32))
+        w = torch.from_numpy(ivar.astype(np.float32))
 
         # remove regions around skylines
-        w[:,cls._skyline_mask] = 0
-
+        w[:, cls._skyline_mask] = 0
 
         # normalize spectra:
         norm = torch.zeros(ntarget)
-        for i in range(ntarget): 
+        for i in range(ntarget):
             # for redshift invariant encoder: select norm window in restframe
             wave_rest = cls._wave_obs / (1 + z[i])
             # flatish region that is well observed out to z ~ 0.5
             sel = (w[i] > 0) & (wave_rest > 5300) & (wave_rest < 5850)
-            if sel.count_nonzero() > 0: 
+            if sel.count_nonzero() > 0:
                 norm[i] = torch.median(spec[i][sel])
             # remove spectra (from training) for which no valid norm could be found
             if not torch.isfinite(norm[i]):
                 norm[i] = 0
             else:
                 spec[i] /= norm[i]
-            w[i] *= norm[i]**2
+            w[i] *= norm[i] ** 2
 
         return spec[keep], w[keep], norm[keep], z[keep], zerr[keep]
-    
+
     @classmethod
-    def query(cls, dir, target, fields=["SURVEY", "PROGRAM", "HEALPIX"], selection_fct=None):
-        """Select SURVEY, PROGRAM, HEALPIX from healpix look up table for healpix that 
+    def query(
+        cls, dir, target, fields=["SURVEY", "PROGRAM", "HEALPIX"], selection_fct=None
+    ):
+        """Select SURVEY, PROGRAM, HEALPIX from healpix look up table for healpix that
         match `selection_fct`. Look up table only includes information on
         TILEID, SURVEY, PROGRAM, PETAL_LOC, HEALPIX
 
@@ -445,10 +467,10 @@ class DESI(Instrument):
         Returns
         -------
         fields: `torch.tensor`, shape (N, F)
-            Tensor of fields for the selected healpix 
+            Tensor of fields for the selected healpix
 
         """
-        main_file = os.path.join(dir, "tilepix.fits") 
+        main_file = os.path.join(dir, "tilepix.fits")
         if not os.path.isfile(main_file):
             url = "https://data.desi.lbl.gov/public/edr/spectro/redux/fuji/healpix/tilepix.fits"
             print(f"downloading {url}")
@@ -457,20 +479,49 @@ class DESI(Instrument):
         print(f"opening {main_file}")
         thpix = aTable.Table.read(main_file)
 
-        if target in ['LRG', 'ELG', 'QSO']: 
-            program = 'dark'
-        elif target in ['BGS', 'MWS']: 
-            program = 'bright'
+        if target in ["LRG", "ELG", "QSO"]:
+            program = "dark"
+        elif target in ["BGS", "MWS"]:
+            program = "bright"
 
         if selection_fct is None:
             # apply default selections
-            sel = ((thpix['SURVEY'] == 'sv3') & 
-                    (thpix['PROGRAM'] == program)) 
+            sel = (thpix["SURVEY"] == "sv3") & (thpix["PROGRAM"] == program)
         else:
             sel = selection_fct(thpix)
 
-        _, uind = np.unique(thpix[sel]['HEALPIX'], return_index=True)
-    
+        _, uind = np.unique(thpix[sel]["HEALPIX"], return_index=True)
+
         out_tab = thpix[fields][sel][uind]
-        out_tab['TARGET'] = target
+        out_tab["TARGET"] = target
         return out_tab
+
+    @classmethod
+    def get_image(
+        cls,
+        ra: float,
+        dec: float,
+        size: int = 256,
+        pixscale: float = 0.262,
+        bands: str = "griz",
+    ) -> Image.Image:
+        """
+        Searches the Legacy Survey DR10 (which includes DECaLS, BASS and MzLS) for a JPEG cutout image.
+
+        Parameters
+        ==========
+        ra: deg
+        dec: deg
+        size: image h/w in pixels, largest is 512
+        pixscale: arcsec, 0.262" is native resolution
+        bands: any combination of g,r,i,z
+
+        Returns
+        =======
+        PIL image
+        """
+        url = f"https://www.legacysurvey.org/viewer/jpeg-cutout?ra={ra}&dec={dec}&layer=ls-dr10&size={size}&pixscale={pixscale}&bands={bands}"
+        r = requests.get(url)
+        image_stream = io.BytesIO(r.content)
+        image = Image.open(image_stream)
+        return image
