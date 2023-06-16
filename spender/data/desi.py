@@ -1,5 +1,6 @@
 import glob
 import os
+from typing import Optional
 import urllib.request
 from functools import partial
 
@@ -14,6 +15,8 @@ import torch
 import pickle
 from torch.utils.data import DataLoader
 from torchinterp1d import interp1d
+
+import h5py
 
 from ..instrument import Instrument, get_skyline_mask
 from ..util import BatchedFilesDataset, load_batch
@@ -499,19 +502,22 @@ class DESI(Instrument):
     @classmethod
     def get_image(
         cls,
-        ra: float,
-        dec: float,
+        target_id: Optional[int] = None,
+        ra: Optional[float] = None,
+        dec: Optional[float] = None,
         size: int = 256,
         pixscale: float = 0.262,
         bands: str = "griz",
+        catalog_file: str = "/scratch/gpfs/js5013/data/BGS_ANY_full.provabgs.sv3.v0.reformat.hdf5",
     ) -> Image.Image:
         """
         Searches the Legacy Survey DR10 (which includes DECaLS, BASS and MzLS) for a JPEG cutout image.
 
         Parameters
         ==========
-        ra: deg
-        dec: deg
+        one of:
+            - target_id (DESI ID) and catalog_file (PROVABGS HDF5 filepath)
+            - ra (deg) and dec (deg)
         size: image h/w in pixels, largest is 512
         pixscale: arcsec, 0.262" is native resolution
         bands: any combination of g,r,i,z
@@ -520,6 +526,22 @@ class DESI(Instrument):
         =======
         PIL image
         """
+        if target_id is not None:
+            assert (
+                catalog_file is not None
+            ), "Must provide catalog_file if target_id is not None"
+            with h5py.File(catalog_file, "r") as f:
+                selection = f["TARGETID"][:] == target_id
+                assert (
+                    selection.sum() > 0
+                ), f"target_id {target_id} not found in {catalog_file}"
+                ra = f["RA"][selection][0]
+                dec = f["DEC"][selection][0]
+        else:
+            assert (
+                ra is not None and dec is not None
+            ), "Must provide ra and dec if target_id is None"
+
         url = f"https://www.legacysurvey.org/viewer/jpeg-cutout?ra={ra}&dec={dec}&layer=ls-dr10&size={size}&pixscale={pixscale}&bands={bands}"
         r = requests.get(url)
         image_stream = io.BytesIO(r.content)
