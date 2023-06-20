@@ -40,5 +40,5 @@ def sdss_II(**kwargs):
         Liang at al. (2023): arXiv:2302.02496
         Melchior et al. (2022): arXiv:2211.07890
     """
-    url = hub_server + "pender.sdss.paperII-c273bb69.pt"
+    url = hub_server + "spender.sdss.paperII-c273bb69.pt"
     return _sdss_model(url, **kwargs)
