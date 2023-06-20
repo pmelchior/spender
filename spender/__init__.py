@@ -29,7 +29,7 @@ def load_model(filename, instrument, **kwargs):
 
     # load model_struct from hub if url is given
     if filename[:4].lower() == "http":
-        kwargs.pop("check_hash")
+        kwargs.pop("check_hash", True) # remove check_hash
         model_struct = torch.hub.load_state_dict_from_url(filename, check_hash=True, **kwargs)
     else:
         model_struct = torch.load(filename, **kwargs)
