@@ -32,7 +32,7 @@ def load_model(filename, instrument, **kwargs):
         kwargs.pop("check_hash")
         model_struct = torch.hub.load_state_dict_from_url(filename, check_hash=True, **kwargs)
     else:
-        model_struct = torch.load(filename, kwargs)
+        model_struct = torch.load(filename, **kwargs)
 
     # check if LSF is contained in model_struct
     try:
