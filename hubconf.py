@@ -13,6 +13,8 @@ def _sdss_model(url, **kwargs):
 def sdss_I(**kwargs):
     """Spectrum Autoencoder model for the SDSS main galaxy sample.
 
+    This model has S=10 latents and a restframe resolution R=5881 for a maximum redshift of z_max=0.5.
+
     See Spender paper I for details:
         Melchior et al. (2022): arXiv:2211.07890
 
@@ -21,7 +23,9 @@ def sdss_I(**kwargs):
     return _sdss_model(url, **kwargs)
 
 def sdss_I_superres(**kwargs):
-    """Spectrum Autoencoder model for the SDSS main galaxy sample.
+    """Spectrum Autoencoder super-resolution model for the SDSS main galaxy sample.
+
+    This model has S=8 latents and a restframe resolution R=11762 for a maximum redshift of z_max=0.5.
 
     See Spender paper I (section 4.2) for details:
         Melchior et al. (2022): arXiv:2211.07890
@@ -33,8 +37,8 @@ def sdss_I_superres(**kwargs):
 def sdss_II(**kwargs):
     """Spectrum Autoencoder model for the SDSS main galaxy sample.
 
-    This model is trained with fidelity, similarity, and consistency losses
-    to provide a redshift-invariant latent space.
+    This model has S=6 latents and a restframe resolution R=7000 for a maximum redshift of z_max=0.5.
+    It has been trained with fidelity, similarity, and consistency losses to provide a redshift-invariant latent space.
 
     See spender papers for details:
         Liang at al. (2023): arXiv:2302.02496
