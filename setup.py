@@ -7,11 +7,11 @@ setup(
     description="Spectrum encoder and decoder",
     long_description=long_description,
     long_description_content_type='text/markdown',
-    version="0.1",
+    version="0.2",
     license="MIT",
     author="Peter Melchior",
     author_email="peter.m.melchior@gmail.com",
-    url="https://github.com/pmelchior/spectrum-encoder",
+    url="https://github.com/pmelchior/spender",
     packages=["spender", "spender.data"],
     package_data={"skymapper.data": ['*.txt']},
     classifiers=[

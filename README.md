@@ -20,14 +20,30 @@ For the time being, you will have to install one dependency manually: `torchinte
 
 ## Pretrained models
 
-We make the best-fitting models discussed in the paper available:
-* [standard resolution](https://www.dropbox.com/s/6o5htaic8wimito/sdss.speculator%2B1.variable.lr_1e-3.latent_10.0.pt?dl=0) (S=10, R=5881)
-* [super-resolution](https://www.dropbox.com/s/d14f1jryelxc5if/sdss.speculator%2B1.variable.superres.lsf_5.lr_1e-3.latent_8.0.pt?dl=0) (S=8, R=11762)
-* [similarity+consistency training](https://www.dropbox.com/s/7ecvnbpc8do6pjy/sdss.similarity-consistency.latent_6.0.pt?dl=0) (S=6, R=7000; see Liang et al. 2023)
+We make the best-fitting models discussed in the paper available through the Astro Data Lab Hub. Here's a workflow:
 
+```python
+import torch.hub
+github = "pmelchior/spender"
+
+# get the spender code and show list of pretrained models
+torch.hub.list(github)
+
+# print out details for SDSS model from paper II
+print(torch.hub.help(github, 'sdss_II'))
+
+# load instrument and spectrum model from the hub
+sdss, model = torch.hub.load(github, 'sdss_II')
+
+# if your machine does not have GPUs, specify the device
+from accelerate import Accelerator
+accelerator = Accelerator(mixed_precision='fp16')
+sdss, model = torch.hub.load(github, 'sdss_II', map_location=accelerator.device)
+```
+ 
 ## SDSS Outliers Catalog
 
-The [catalog of the latent-space probability](https://www.dropbox.com/s/2eo8r4mlsh7p15o/FULL_SDSSID_logP.txt.bz2?dl=0) for the SDSS-I main galaxy sample; see Liang et al. (2023) for details
+The [catalog of the latent-space probability](https://hub.pmelchior.net/spender.sdss.paperII.logP.txt.bz2) for the SDSS-I main galaxy sample; see Liang et al. (2023) for details
 
 ## Use
 
@@ -36,16 +52,17 @@ Documentation and tutorials are forthcoming. In the meantime, check out `train/d
 In short, you can run spender like this:
 ```python
 import torch
-import spender
-from spender.data.sdss import SDSS
+from accelerate import Accelerator
 
-# create the instrument
-sdss = SDSS()
+# hardware optimization
+accelerator = Accelerator(mixed_precision='fp16')
 
-# load the model, set device as appropriate
-model, loss = spender.load_model(path_to_model_file, sdss, device='cpu')
+# get code, instrument, and pretrained spectrum model from the hub
+github = "pmelchior/spender"
+sdss, model = torch.hub.load(github, 'sdss_II',  map_location=accelerator.device)
 
 # get some SDSS spectra from the ids, store locally in data_path
+from spender.data.sdss import SDSS
 data_path = "./DATA"
 ids = ((412, 52254, 308), (412, 52250, 129))
 spec, w, z, norm, zerr = SDSS.make_batch(data_path, ids)
