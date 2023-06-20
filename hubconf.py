@@ -5,8 +5,27 @@ from spender.data.sdss import SDSS as _SDSS
 
 hub_server = "https://hub.pmelchior.net/"
 
-def sdss_I(device=None, **kwargs):
+def _sdss_model(url, **kwargs):
+    """needs docstrings
+    """
     instrument = _SDSS()
-    url = hub_server + "sdss.speculator+1.variable.lr_1e-3.latent_10.0.pt"
-    model = _load_model(url, instrument, device=device)
+    model = _load_model(url, instrument, kwargs)
     return instrument, model
+
+def sdss_I(**kwargs):
+    """needs docstrings
+    """
+    url = hub_server + "spender.sdss.paperI-08798cbc.pt"
+    return _sdss_model(url, kwargs)
+
+def sdss_I_superres(**kwargs):
+    """needs docstrings
+    """
+    url = hub_server + "spender.sdss.paperI.superres-0403266c.pt"
+    return _sdss_model(url, kwargs)
+
+def sdss_II(**kwargs):
+    """needs docstrings
+    """
+    url = hub_server + "pender.sdss.paperII-c273bb69.pt"
+    return _sdss_model(url, kwargs)

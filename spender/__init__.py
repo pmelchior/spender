@@ -6,7 +6,7 @@ from .model import (MLP, SpectrumAutoencoder, SpectrumDecoder, SpectrumEncoder,
                     SpeculatorActivation)
 
 
-def load_model(filename, instrument, device=None):
+def load_model(filename, instrument, **kwargs):
     """Load models from file
 
     Parameter
@@ -29,14 +29,9 @@ def load_model(filename, instrument, device=None):
 
     # load model_struct from hub if url is given
     if filename[:4].lower() == "http":
-        model_struct = torch.hub.load_state_dict_from_url(filename, map_location=device)
+        model_struct = torch.hub.load_state_dict_from_url(filename, kwargs)
     else:
-        model_struct = torch.load(filename, map_location=device)
-
-    # if list of models, only use first one
-    if isinstance(model_struct["model"], (list, tuple)):
-        model_struct["model"] = model_struct["model"][0]
-
+        model_struct = torch.load(filename, kwargs)
 
     # check if LSF is contained in model_struct
     try:
@@ -81,5 +76,4 @@ def load_model(filename, instrument, device=None):
         ] = instrument._skyline_mask
         model.load_state_dict(model_struct["model"], strict=False)
 
-    loss = torch.tensor(model_struct["losses"])
-    return model, loss
+    return model
