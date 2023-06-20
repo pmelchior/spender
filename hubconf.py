@@ -2,7 +2,7 @@ dependencies = ['torch', 'os']
 
 from spender import load_model
 from spender.model import SpectrumAutoencoder
-from spender.instrument import SDSS
+from spender.data.sdss import SDSS
 
 hub_server = "https://hub.pmelchior.net/"
 
