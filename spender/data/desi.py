@@ -222,8 +222,9 @@ class DESI(Instrument):
         Either the local file name or the prepared spectrum
         """
 
-        for ftype in ["redrock", "emline", "qso_mgii", "qso_qn", "coadd"]:
+        for ftype in ["redrock", "rrdetails", "emline", "qso_mgii", "qso_qn", "coadd"]:
             filename = "%s-%s-%s-%i.fits" % (ftype, survey, prog, hpix)
+            if ftype == 'rrdetails': filename = filename.replace('.fits', '.h5')
             dirname = os.path.join(dir, str(hpix))
             flocal = os.path.join(dirname, filename)
             # download spectra file
