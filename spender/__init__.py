@@ -1,4 +1,5 @@
 import torch
+import torch.hub
 
 from .instrument import LSF, Instrument
 from .model import (MLP, SpectrumAutoencoder, SpectrumDecoder, SpectrumEncoder,
@@ -25,7 +26,12 @@ def load_model(filename, instrument, device=None):
         Training and validation loss for this model
     """
     assert isinstance(instrument, Instrument)
-    model_struct = torch.load(filename, map_location=device)
+
+    # load model_struct from hub if url is given
+    if filename[:4].lower() == "http":
+        model_struct = torch.hub.load_state_dict_from_url(filename, map_location=device)
+    else:
+        model_struct = torch.load(filename, map_location=device)
 
     # if list of models, only use first one
     if isinstance(model_struct["model"], (list, tuple)):
