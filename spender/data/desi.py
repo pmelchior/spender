@@ -283,7 +283,7 @@ class DESI(Instrument):
         # read spectra file
         hdulist = fits.open(filename)
         nhdu = len(hdulist)
-        survey = hdulist[0].header["SURVEY"]
+        survey = hdulist[0].header["SURVEY"].upper()
         meta = aTable.Table.read(filename)  # meta data
 
         # read redrock file
@@ -294,12 +294,13 @@ class DESI(Instrument):
 
         keep = (
             (meta["COADD_FIBERSTATUS"] == 0)
-            & (meta["%s_DESI_TARGET" % survey.upper()] != 0)  # good fiber
+            & (meta["%s_DESI_TARGET" % survey] != 0)  # good fiber
             & (rr[1].data["ZWARN"] == 0)  # is DESI target
             & (rr[1].data["SPECTYPE"] == "GALAXY")  # no warning flags
         )  # is a galaxy according to redrock
         # next best-fit is high
         if target is not None:
+            target = target.upper()
             # see https://arxiv.org/pdf/2208.08518.pdf Section 2.2 for details
             # on the bitmask
             if survey == "sv1":
@@ -310,23 +311,23 @@ class DESI(Instrument):
                 from desitarget.sv3.sv3_targetmask import desi_mask
             else:
                 raise ValueError("not included in EDR")
-            if target.upper() == "BGS":
+            if target == "BGS":
                 target = "BGS_ANY"
 
             keep = keep & (
-                meta["%s_DESI_TARGET" % survey.upper()] & desi_mask[target.upper()] > 0
+                meta["%s_DESI_TARGET" % survey] & desi_mask[target] > 0
             )
 
             # redshift criteria for BGS and LRG. no additional criteria imposed
             # for ELG and QSO. ELG requires OII flux SNR; QSO has
             # afterburners...
             # see DESI Collaboration SV overivew paper
-            if target.upper == "BGS":
+            if target == "BGS":
                 keep = keep & (
                     (rr[1].data["ZERR"] < 0.0005 * (1.0 + rr[1].data["Z"]))
                     & (rr[1].data["DELTACHI2"] > 40)  # low redshift error
                 )  # chi2 difference with
-            elif target.upper == "LRG":
+            elif target == "LRG":
                 keep = keep & (rr[1].data["DELTACHI2"] > 15)  # chi2 difference with
 
         # read in data
