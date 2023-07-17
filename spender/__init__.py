@@ -1,11 +1,12 @@
 import torch
+import torch.hub
 
 from .instrument import LSF, Instrument
 from .model import (MLP, SpectrumAutoencoder, SpectrumDecoder, SpectrumEncoder,
                     SpeculatorActivation)
 
 
-def load_model(filename, instrument, device=None):
+def load_model(filename, instrument, **kwargs):
     """Load models from file
 
     Parameter
@@ -25,12 +26,13 @@ def load_model(filename, instrument, device=None):
         Training and validation loss for this model
     """
     assert isinstance(instrument, Instrument)
-    model_struct = torch.load(filename, map_location=device)
 
-    # if list of models, only use first one
-    if isinstance(model_struct["model"], (list, tuple)):
-        model_struct["model"] = model_struct["model"][0]
-
+    # load model_struct from hub if url is given
+    if filename[:4].lower() == "http":
+        kwargs.pop("check_hash", True) # remove check_hash
+        model_struct = torch.hub.load_state_dict_from_url(filename, check_hash=True, **kwargs)
+    else:
+        model_struct = torch.load(filename, **kwargs)
 
     # check if LSF is contained in model_struct
     try:
@@ -75,5 +77,4 @@ def load_model(filename, instrument, device=None):
         ] = instrument._skyline_mask
         model.load_state_dict(model_struct["model"], strict=False)
 
-    loss = torch.tensor(model_struct["losses"])
-    return model, loss
+    return model
