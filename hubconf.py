@@ -1,12 +1,18 @@
 dependencies = ['torch', 'os']
 
 from spender import load_model as _load_model
-from spender.data.sdss import SDSS as _SDSS
 
 hub_server = "https://hub.pmelchior.net/"
 
 def _sdss_model(url, **kwargs):
-    instrument = _SDSS()
+    from spender.data.sdss import SDSS
+    instrument = SDSS()
+    model = _load_model(url, instrument, **kwargs)
+    return instrument, model
+
+def _desi_model(url, **kwargs):
+    from spender.data.desi import DESI
+    instrument = DESI()
     model = _load_model(url, instrument, **kwargs)
     return instrument, model
 
@@ -46,3 +52,31 @@ def sdss_II(**kwargs):
     """
     url = hub_server + "spender.sdss.paperII-c273bb69.pt"
     return _sdss_model(url, **kwargs)
+
+def desi_edr_galaxy(**kwargs):
+    """Spectrum Autoencoder model for the DESI EDR Bright Galaxy Survey sample.
+
+    This model has S=6 latents and a restframe resolution R=9780 for a maximum redshift of z_max=0.8.
+    It has been trained with fidelity, similarity, and consistency losses to provide a redshift-invariant latent space.
+
+    See spender papers for details:
+        Liang at al. (2023b): arXiv:...
+        Liang at al. (2023a): arXiv:2302.02496
+        Melchior et al. (2022): arXiv:2211.07890
+    """
+    url = hub_server + "spender.desi-edr.galaxyae-b9bc8d12.pt"
+    return _desi_model(url, **kwargs)
+
+def desi_edr_star(**kwargs):
+    """Spectrum Autoencoder model for the DESI EDR Milky Way Survey sample.
+
+    This model has S=6 latents and a restframe resolution R=7864 for a maximum redshift of z_max=0.005.
+    It has been trained with fidelity, and similarity but not consistency loss.
+
+    See spender papers for details:
+        Liang at al. (2023b): arXiv:...
+        Liang at al. (2023a): arXiv:2302.02496
+        Melchior et al. (2022): arXiv:2211.07890
+    """
+    url = hub_server + " spender.desi-edr.starae-2e33f4e5.pt"
+    return _desi_model(url, **kwargs)
