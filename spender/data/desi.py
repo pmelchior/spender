@@ -12,8 +12,7 @@ import numpy as np
 import torch
 import pickle
 from torch.utils.data import DataLoader
-from torchinterp1d import interp1d
-
+from torchinterp1d import Interp1d
 import h5py
 
 from ..instrument import Instrument, get_skyline_mask
@@ -103,17 +102,15 @@ class DESI(Instrument):
         list of filepaths
         """
         if tag is None:
-            tag = "variable"
+            tag = "Variable"
         classname = cls.__mro__[0].__name__
-        filename = f"{classname}{tag}_*.pkl"
-        batch_files = glob.glob(dir + "/" + filename)
-        batches = [item for item in batch_files if not "copy" in item]
+        filename = f"{classname}{tag}*_*.pkl"
+        batches = glob.glob(dir + "/" + filename)
 
         NBATCH = len(batches)
         train_batches = batches[: int(0.7 * NBATCH)]
         valid_batches = batches[int(0.7 * NBATCH) : int(0.85 * NBATCH)]
         test_batches = batches[int(0.85 * NBATCH) :]
-
         if which == "test":
             return test_batches
         elif which == "valid":
@@ -152,6 +149,7 @@ class DESI(Instrument):
 
         with open(filename, "wb") as f:
             pickle.dump(batch, f)
+        return filename
 
     @classmethod
     def save_in_batches(cls, dir, ids, tag=None, batch_size=1024):
@@ -179,16 +177,17 @@ class DESI(Instrument):
 
             f = cls.get_spectra(dir, survey, prog, hpix, return_file=True)
 
-            spec, w, norm, z, zerr = cls.prepare_spectra(f, target=target)
-            if new_batch:
-                batches = [spec, w, norm, z, zerr]
-            else:
+            spec, w, z, target_id, norm, zerr = cls.prepare_spectra(f, target=target)
+            if new_batch: 
+                batches = [spec, w, z, target_id, norm, zerr]
+            else: 
                 batches[0] = torch.concatenate([batch[0], spec], axis=0)
                 batches[1] = torch.concatenate([batch[1], w], axis=0)
-                batches[2] = torch.concatenate([batch[2], norm], axis=0)
-                batches[3] = torch.concatenate([batch[3], z], axis=0)
-                batches[4] = torch.concatenate([batch[4], zerr], axis=0)
-
+                batches[2] = torch.concatenate([batch[2], z], axis=0)
+                batches[3] = torch.concatenate([batch[3], target_id], axis=0)
+                batches[4] = torch.concatenate([batch[4], norm], axis=0)
+                batches[5] = torch.concatenate([batch[5], zerr], axis=0)
+            
             N = batches[0].shape[0]
             while N > batch_size:
                 batch = [_batch[:batch_size] for _batch in batches]
@@ -246,7 +245,7 @@ class DESI(Instrument):
         return cls.prepare_spectra(flocal)
 
     @classmethod
-    def prepare_spectra(cls, filename, target=None):
+    def prepare_spectra(cls, filename, target=None, spectype='GALAXY'):
         """Prepare spectra in DESI healpix for analysis
 
         This method creates an extended mask, using the original DESI mask and
@@ -282,46 +281,48 @@ class DESI(Instrument):
         """
         # read spectra file
         hdulist = fits.open(filename)
-        nhdu = len(hdulist)
-        survey = hdulist[0].header["SURVEY"].upper()
-        meta = aTable.Table.read(filename)  # meta data
+        survey = hdulist[0].header['SURVEY'].upper()
+        meta = aTable.Table.read(filename) # meta data 
+        target_id = hdulist[1].data['TARGETID'] # unique target ID
 
         # read redrock file
         rr = fits.open(filename.replace("coadd", "redrock"))
         # get redshift and error
-        z = torch.tensor(rr[1].data["Z"].astype(np.float32))
-        zerr = torch.tensor(rr[1].data["ZERR"].astype(np.float32))
+        z = torch.tensor(rr[1].data['Z'].astype(np.float32))
+        zerr = torch.tensor(rr[1].data['ZERR'].astype(np.float32))
 
-        keep = (
-            (meta["COADD_FIBERSTATUS"] == 0)
-            & (meta["%s_DESI_TARGET" % survey] != 0)  # good fiber
-            & (rr[1].data["ZWARN"] == 0)  # is DESI target
-            & (rr[1].data["SPECTYPE"] == "GALAXY")  # no warning flags
-        )  # is a galaxy according to redrock
-        # next best-fit is high
-        if target is not None:
+        keep = ((meta['COADD_FIBERSTATUS'] == 0) &                  # good fiber 
+                (meta['%s_DESI_TARGET' % survey] != 0) &            # is DESI target
+                (rr[1].data['ZWARN'] == 0) &                        # no warning flags
+                (rr[1].data['SPECTYPE'] == spectype) &              # is a galaxy according to redrock
+                (rr[1].data['Z'] < 0.8))                            # Redshift < 0.8
+
+        if target is not None: 
             target = target.upper()
+
             # see https://arxiv.org/pdf/2208.08518.pdf Section 2.2 for details
             # on the bitmask
+            import desitarget # https://github.com/desihub/desitarget/
+
             if survey == "sv1":
                 from desitarget.sv1.sv1_targetmask import desi_mask
             elif survey == "sv2":
                 from desitarget.sv2.sv2_targetmask import desi_mask
             elif survey == "sv3":
                 from desitarget.sv3.sv3_targetmask import desi_mask
-            else:
-                raise ValueError("not included in EDR")
-            if target == "BGS":
-                target = "BGS_ANY"
+            else: 
+                raise ValueError("not included in EDR") 
+            if target == 'BGS': 
+                target = 'BGS_ANY'
+            if target == 'MWS':
+                target = 'MWS_ANY'
 
-            keep = keep & (
-                meta["%s_DESI_TARGET" % survey] & desi_mask[target] > 0
-            )
+            keep = keep & (desi_mask[target] > 0)
 
             # redshift criteria for BGS and LRG. no additional criteria imposed
             # for ELG and QSO. ELG requires OII flux SNR; QSO has
             # afterburners...
-            # see DESI Collaboration SV overivew paper
+            # see DESI Collaboration SV overview paper
             if target == "BGS":
                 keep = keep & (
                     (rr[1].data["ZERR"] < 0.0005 * (1.0 + rr[1].data["Z"]))
@@ -427,6 +428,7 @@ class DESI(Instrument):
         # explicit type conversion to float32 to get to little endian
         spec = torch.from_numpy(flux.astype(np.float32))
         w = torch.from_numpy(ivar.astype(np.float32))
+        target_id = torch.from_numpy(target_id.astype(np.int64))
 
         # remove regions around skylines
         w[:, cls._skyline_mask] = 0
@@ -445,9 +447,12 @@ class DESI(Instrument):
                 norm[i] = 0
             else:
                 spec[i] /= norm[i]
-            w[i] *= norm[i] ** 2
+            w[i] *= norm[i]**2
 
-        return spec[keep], w[keep], norm[keep], z[keep], zerr[keep]
+        # selects finite fluxes
+        keep = keep & (spec.isfinite().sum(axis=-1) == nwave).numpy()
+        print("keep: %d / %d"%(keep.sum(),len(keep)))
+        return spec[keep], w[keep], z[keep], target_id[keep],  norm[keep], zerr[keep]
 
     @classmethod
     def query(
@@ -498,6 +503,95 @@ class DESI(Instrument):
         out_tab = thpix[fields][sel][uind]
         out_tab["TARGET"] = target
         return out_tab
+
+
+    @classmethod
+    def augment_spectra(cls, batch, redshift=True, noise=True, mask=False, ratio=0.05, z_new=None, z_max = 0.8):
+        """Augment spectra for greater diversity
+
+        Parameters
+        ----------
+        batch: `torch.tensor`, shape (N, L)
+            Spectrum batch
+        redshift: bool
+            Modify redshift by up to 0.2 (keeping it within 0...0.5)
+        noise: bool
+            Whether to add noise to the spectrum (up to 0.2*max(spectrum))
+        mask: bool
+            Whether to block out a fraction (given by `ratio`) of the spectrum
+        ratio: float
+            Fraction of the spectrum that will be masked
+        z_new: float
+            Adopt this redshift for all spectra in the batch
+
+        Returns
+        -------
+        spec: `torch.tensor`, shape (N, L)
+            Altered spectrum
+        w: `torch.tensor`, shape (N, L)
+            Altered inverse variance weights of spectrum
+        z: `torch.tensor`, shape (N, )
+            Altered redshift
+        """
+
+        spec, w, z = batch[:3]
+        batch_size, spec_size = spec.shape
+        device = spec.device
+        wave_obs = cls._wave_obs.to(device)
+
+        if redshift:
+            if z_new == None:
+                # uniform distribution of redshift offsets
+                z_new = z_max*(torch.rand(batch_size, device=device))
+            if z_max < 0.01:
+                z_new = z_max*(torch.rand(batch_size, device=device)-0.5)
+
+            zfactor = (1 + z) / (1 + z_new)
+            # transform augments into the wavelengths of observed spectra
+            wave_redshifted =  (wave_obs.unsqueeze(1) * zfactor).T
+
+            # redshift interpolation
+            spec_new = Interp1d()(wave_obs.repeat(batch_size,1), spec, wave_redshifted).float()
+            # ensure extrapolated values have zero weights
+            wmin = wave_obs.min()
+            wmax = wave_obs.max()
+
+            # ensure extrapolated values have zero weights
+            w_new = torch.clone(w)
+            w_new = Interp1d()(wave_obs.repeat(batch_size,1),
+                               w_new, wave_redshifted).float()
+            #w_new = torch.nn.functional.relu(w_new)
+
+            out = (wave_redshifted<wmin)|(wave_redshifted>wmax)
+
+        else:
+            spec_new, w_new, z_new = torch.clone(spec), torch.clone(w), z
+
+        # add noise
+        if noise:
+            sigma = 0.2 * torch.max(spec, 1, keepdim=True)[0]
+            noise = sigma * torch.distributions.Normal(0, 1).sample(spec.shape).to(
+                device
+            )
+            noise_mask = (
+                torch.distributions.Uniform(0, 1).sample(spec.shape).to(device) > ratio
+            )
+            noise[noise_mask] = 0
+            spec_new += noise
+            # add variance in quadrature, avoid division by 0
+            w_new = 1 / (1 / (w_new + 1e-6) + noise**2)
+
+        if mask:
+            length = int(spec_size * ratio)
+            start = torch.randint(0, spec_size - length, (1,)).item()
+            spec_new[:, start : start + length] = 0
+            w_new[:, start : start + length] = 0
+
+        if redshift:
+            spec_new[out] = 0
+            w_new[out] = 0
+        return spec_new, w_new, z_new
+
 
     @classmethod
     def get_image(
