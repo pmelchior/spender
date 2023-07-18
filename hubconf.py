@@ -78,5 +78,5 @@ def desi_edr_star(**kwargs):
         Liang at al. (2023a): arXiv:2302.02496
         Melchior et al. (2022): arXiv:2211.07890
     """
-    url = hub_server + " spender.desi-edr.starae-2e33f4e5.pt"
+    url = hub_server + "spender.desi-edr.starae-2e33f4e5.pt"
     return _desi_model(url, **kwargs)
