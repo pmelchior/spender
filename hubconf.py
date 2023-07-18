@@ -60,7 +60,7 @@ def desi_edr_galaxy(**kwargs):
     It has been trained with fidelity, similarity, and consistency losses to provide a redshift-invariant latent space.
 
     See spender papers for details:
-        Liang at al. (2023b): arXiv:...
+        Liang at al. (2023b): arXiv:2307.07664
         Liang at al. (2023a): arXiv:2302.02496
         Melchior et al. (2022): arXiv:2211.07890
     """
@@ -74,7 +74,7 @@ def desi_edr_star(**kwargs):
     It has been trained with fidelity, and similarity but not consistency loss.
 
     See spender papers for details:
-        Liang at al. (2023b): arXiv:...
+        Liang at al. (2023b): arXiv:2307.07664
         Liang at al. (2023a): arXiv:2302.02496
         Melchior et al. (2022): arXiv:2211.07890
     """
