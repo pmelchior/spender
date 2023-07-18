@@ -2,8 +2,9 @@
 
 _Neural spectrum encoder and decoder_
 
-* Paper I: https://arxiv.org/abs/2211.07890
-* Paper II: https://arxiv.org/abs/2302.02496
+* Paper I (SDSS): https://arxiv.org/abs/2211.07890
+* Paper II (SDSS): https://arxiv.org/abs/2302.02496
+* Paper III (DESI EDR): https://arxiv.org/abs/2307.07664
 
 From a data-driven side, galaxy spectra have two fundamental degrees of freedom: their instrinsic spectral properties (or type, if you believe in such a thing) and their redshift. The latter makes them awkward to ingest because it stretches everything, which means spectral features don't appear at the same places. This is why most analyses of the intrinsic properties are done by transforming the observed spectrum to restframe.
 
@@ -41,9 +42,11 @@ accelerator = Accelerator(mixed_precision='fp16')
 sdss, model = torch.hub.load(github, 'sdss_II', map_location=accelerator.device)
 ```
  
-## SDSS Outliers Catalog
+## Outliers Catalogs
 
-The [catalog of the latent-space probability](https://hub.pmelchior.net/spender.sdss.paperII.logP.txt.bz2) for the SDSS-I main galaxy sample; see Liang et al. (2023) for details
+catalog of latent-space probabilities for
+* [SDSS-I main galaxy sample](https://hub.pmelchior.net/spender.sdss.paperII.logP.txt.bz2); see Liang et al. (2023a) for details
+* [DESI EDR BGS sample](https://hub.pmelchior.net/spender.desi-edr.full-bgs-objects-logP.txt.bz2); see Liang et al. (2023b) for details
 
 ## Use
 

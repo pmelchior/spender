@@ -34,6 +34,13 @@ def load_model(filename, instrument, **kwargs):
     else:
         model_struct = torch.load(filename, **kwargs)
 
+    # check if model_struct['model'] is a single model or list
+    try:
+        model_struct["model"]["decoder.wave_rest"]
+    except TypeError:
+        model_struct["model"] = model_struct["model"][0]
+
+
     # check if LSF is contained in model_struct
     try:
         kernel = model_struct["model"]["encoder.instrument.lsf.weight"].flatten()
