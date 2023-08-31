@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 from torchinterp1d import interp1d
+from .util import calc_normalization
 
 
 class MLP(nn.Sequential):
@@ -114,7 +115,7 @@ class SpectrumEncoder(nn.Module):
         super(SpectrumEncoder, self).__init__()
         self.instrument = instrument
         self.n_latent = n_latent
-        
+
         filters = [128, 256, 512]
         sizes = [5, 11, 21]
         self.conv1, self.conv2, self.conv3 = self._conv_blocks(
@@ -133,7 +134,9 @@ class SpectrumEncoder(nn.Module):
             act = [nn.PReLU(n) for n in n_hidden]
             # last activation identity to have latents centered around 0
             act.append(nn.Identity())
-        self.mlp = MLP(self.n_feature, self.n_latent, n_hidden=n_hidden, act=act, dropout=dropout)
+        self.mlp = MLP(
+            self.n_feature, self.n_latent, n_hidden=n_hidden, act=act, dropout=dropout
+        )
 
     def _conv_blocks(self, filters, sizes, dropout=0):
         convs = []
@@ -410,22 +413,82 @@ class BaseAutoencoder(nn.Module):
         """
         return self.decoder(s)
 
-    def _forward(self, y, instrument=None, z=None, s=None):
+    def normalize(
+        self,
+        spectrum,
+        weights,
+        restframe,
+        reconstruction,
+        normalization_range=(5300, 5850),
+    ):
+        """Apply normalization to the reconstructed spectrum using a flat region
+        in the restframe spectrum, as determined by the model.
+
+        Inputs:
+        =======
+        spectrum: torch.tensor
+            Unnormalized observed spectrum.
+        weights: torch.tensor
+            Inverse variance weights of the observed spectrum.
+        restframe: torch.tensor
+            Restframe spectrum from the model.
+        reconstruction: torch.tensor
+            Reconstructed spectrum from the model.
+
+        Outputs:
+        ========
+        restframe: torch.tensor
+            Restframe spectrum, normalized to the observed spectrum.
+        reconstruction: torch.tensor
+            Reconstructed spectrum, normalized to the observed spectrum.
+        """
+        assert (len(normalization_range) == 2) and (
+            normalization_range[0] < normalization_range[1]
+        ), "Invalid normalization range, must be a tuple/list of length 2 with the lower bound first"
+        assert (
+            normalization_range[0] < self.wave_rest[-1]
+        ), "Normalization range too low, no overlap with restframe"
+        assert (
+            normalization_range[1] > self.wave_rest[0]
+        ), "Normalization range too high, no overlap with restframe"
+        normalization = torch.nanmedian(
+            torch.where(
+                (normalization_range[0] < self.wave_rest)
+                & (self.wave_rest < normalization_range[1]),
+                restframe,
+                torch.nan,
+            )
+        )
+        reconstruction = reconstruction / normalization
+        mle = calc_normalization(reconstruction, spectrum, weights)
+        restframe = restframe / normalization * mle
+        reconstruction = reconstruction * mle
+        return restframe, reconstruction
+
+    def _forward(self, y, instrument=None, z=None, s=None, weights=None):
+        """Perform a forward pass through the model to create a latent, restframe, and reconstruction from an observed spectrum, instrument, and redshift. If inverse variance weights are passed, also normalizes the reconstruction to the observed spectrum."""
         if s is None:
             s = self.encode(y)
         if instrument is None:
             instrument = self.encoder.instrument
 
-        x = self.decode(s)
-        y = self.decoder.transform(x, instrument=instrument, z=z)
+        # make restframe model spectrum
+        restframe = self.decode(s)
+        # make resampled and interpolated reconstruction
+        reconstruction = self.decoder.transform(restframe, instrument=instrument, z=z)
 
-        return s, x, y
+        # normalize restframe and reconstruction to observed spectrum
+        if weights is not None:
+            restframe, reconstruction = torch.vmap(self.normalize)(
+                y, weights, restframe, reconstruction
+            )
 
-    def forward(self, y, instrument=None, z=None, s=None):
+        return s, restframe, reconstruction
+
+    def forward(self, y, instrument=None, z=None, s=None, weights=None):
         """Forward method
 
-        Transforms observed spectra into their reconstruction for a given intrument
-        and redshift.
+        Transforms observed spectra into their reconstruction for a given intrument and redshift. If weights are passed, also normalizes the reconstruction to the observed spectrum.
 
         Parameter
         ---------
@@ -436,15 +499,17 @@ class BaseAutoencoder(nn.Module):
         z: `torch.tensor`, shape (N, 1)
             Redshifts for each spectrum. When given, `aux` is ignored.
         s: `torch.tensor`, shape (N, S)
-            (optional) Batch of latents. When given, encoding is omitted and these
-            latents are used instead.
+            (optional) Batch of latents. When given, encoding is omitted and these latents are used instead.
+        weights: `torch.tensor`, shape (N, L)
+            (optional) Inverse variance weights for each spectrum. When given, the reconstruction is normalized to the observed spectrum.
 
         Returns
         -------
         y: `torch.tensor`, shape (N, L)
             Batch of spectra at redshift `z` as observed by `instrument`
         """
-        s, x, y_ = self._forward(y, instrument=instrument, z=z, s=s)
+        s, x, y_ = self._forward(y, instrument=instrument, z=z, s=s, weights=weights)
+
         return y_
 
     def loss(self, y, w, instrument=None, z=None, s=None, individual=False):
