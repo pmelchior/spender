@@ -304,11 +304,11 @@ class DESI(Instrument):
             # on the bitmask
             import desitarget # https://github.com/desihub/desitarget/
 
-            if survey == "sv1":
+            if survey.lower() == "sv1":
                 from desitarget.sv1.sv1_targetmask import desi_mask
-            elif survey == "sv2":
+            elif survey.lower() == "sv2":
                 from desitarget.sv2.sv2_targetmask import desi_mask
-            elif survey == "sv3":
+            elif survey.lower() == "sv3":
                 from desitarget.sv3.sv3_targetmask import desi_mask
             else: 
                 raise ValueError("not included in EDR") 
@@ -333,7 +333,7 @@ class DESI(Instrument):
 
         # read in data
         _wave, _flux, _ivar, _mask, _res = {}, {}, {}, {}, {}
-        for h in range(2, nhdu):
+        for h in range(2, len(hdulist)):
             if "WAVELENGTH" in hdulist[h].header["EXTNAME"]:
                 band = hdulist[h].header["EXTNAME"].split("_")[0].lower()
                 _wave[band] = hdulist[h].data
