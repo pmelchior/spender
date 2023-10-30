@@ -7,7 +7,7 @@ setup(
     description="Spectrum encoder and decoder",
     long_description=long_description,
     long_description_content_type='text/markdown',
-    version="0.2.2",
+    version="0.2.3",
     license="MIT",
     author="Peter Melchior",
     author_email="peter.m.melchior@gmail.com",
