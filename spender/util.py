@@ -113,3 +113,7 @@ def resample_to_restframe(wave_obs, wave_rest, y, w, z):
     # yrest[msk]=0 # not needed because all spectral elements are weighted
     wrest[msk] = 0
     return yrest, wrest
+
+
+def calc_normalization(x, y, ivar):
+    return ((x * ivar) @ y) / ((x * ivar) @ x)

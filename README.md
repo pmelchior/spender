@@ -13,13 +13,13 @@ We decided to do the opposite. We build a custom architecture, which describes t
 
 Doing so clearly separates the responsibilities in the architecture. Spender establishes a restframe that has higher resolution and larger wavelength range than the spectra from which it is trained. The model can be trained from spectra at different redshifts or even from different instruments without the need to standardize the observations. Spender also has an explicit, differentiable redshift dependence, which can be coupled with a redshift estimator for a fully data-driven spectrum analysis pipeline.
 
-## Installation
+## Installation (optional: for development)
 
 The easiest way is `pip install spender`. When installing from the code repo, run `pip install -e .`.
 
 For the time being, you will have to install one dependency manually: `torchinterp1d` is available [here](https://github.com/aliutkus/torchinterp1d).
 
-## Pretrained models
+## Pretrained models (requires no spender install)
 
 We make the best-fitting models discussed in the paper available through the Astro Data Lab Hub. Here's a workflow:
 
