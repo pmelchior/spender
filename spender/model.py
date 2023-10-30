@@ -465,7 +465,7 @@ class BaseAutoencoder(nn.Module):
         reconstruction = reconstruction * mle
         return restframe, reconstruction
 
-    def _forward(self, y, instrument=None, z=None, s=None, weights=None):
+    def _forward(self, y, instrument=None, z=None, s=None, normalize=False, weights=None):
         """Perform a forward pass through the model to create a latent, restframe, and reconstruction from an observed spectrum, instrument, and redshift. If inverse variance weights are passed, also normalizes the reconstruction to the observed spectrum."""
         if s is None:
             s = self.encode(y)
@@ -478,14 +478,16 @@ class BaseAutoencoder(nn.Module):
         reconstruction = self.decoder.transform(restframe, instrument=instrument, z=z)
 
         # normalize restframe and reconstruction to observed spectrum
-        if weights is not None:
+        if normalize:
+            if weights is None: # vmap requires tensors
+                weights = torch.ones_like(y)
             restframe, reconstruction = torch.vmap(self.normalize)(
                 y, weights, restframe, reconstruction
             )
 
         return s, restframe, reconstruction
 
-    def forward(self, y, instrument=None, z=None, s=None, weights=None):
+    def forward(self, y, instrument=None, z=None, s=None, normalize=False, weights=None):
         """Forward method
 
         Transforms observed spectra into their reconstruction for a given intrument and redshift. If weights are passed, also normalizes the reconstruction to the observed spectrum.
@@ -500,19 +502,22 @@ class BaseAutoencoder(nn.Module):
             Redshifts for each spectrum. When given, `aux` is ignored.
         s: `torch.tensor`, shape (N, S)
             (optional) Batch of latents. When given, encoding is omitted and these latents are used instead.
+        normalize: bool
+            (optional) Whether to normalize the reconstruction match the amplitude of the observed spectrum.
+            If this is set to False, it requires that the spectra have been flux-normalized.
         weights: `torch.tensor`, shape (N, L)
-            (optional) Inverse variance weights for each spectrum. When given, the reconstruction is normalized to the observed spectrum.
+            (optional) Inverse variance weights for each spectrum, used for normalization computation.
 
         Returns
         -------
         y: `torch.tensor`, shape (N, L)
             Batch of spectra at redshift `z` as observed by `instrument`
         """
-        s, x, y_ = self._forward(y, instrument=instrument, z=z, s=s, weights=weights)
+        s, x, y_ = self._forward(y, instrument=instrument, z=z, s=s, normalize=normalize, weights=weights)
 
         return y_
 
-    def loss(self, y, w, instrument=None, z=None, s=None, individual=False):
+    def loss(self, y, w, instrument=None, z=None, s=None, normalize=False, individual=False):
         """Weighted MSE loss
 
         Parameter
@@ -528,6 +533,9 @@ class BaseAutoencoder(nn.Module):
         s: `torch.tensor`, shape (N, S)
             (optional) Batch of latents. When given, encoding is omitted and these
             latents are used instead.
+        normalize: bool
+            (optional) Whether to normalize the reconstruction match the amplitude of the observed spectrum.
+            If this is set to False, it requires that the spectra have been flux-normalized.
         individual: bool
             Whether the loss is computed for each spectrum individually or aggregated
 
@@ -535,7 +543,7 @@ class BaseAutoencoder(nn.Module):
         -------
         float or `torch.tensor`, shape (N,) of weighted MSE loss
         """
-        y_ = self.forward(y, instrument=instrument, z=z, s=s)
+        y_ = self.forward(y, instrument=instrument, z=z, s=s, normalize=normalize)
         return self._loss(y, w, y_, individual=individual)
 
     def _loss(self, y, w, y_, individual=False):
