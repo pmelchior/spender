@@ -1,6 +1,7 @@
 dependencies = ['torch', 'os']
 
 from spender import load_model as _load_model
+from spender import load_flow_model as _load_flow_model
 
 hub_server = "https://hub.pmelchior.net/"
 
@@ -80,3 +81,23 @@ def desi_edr_star(**kwargs):
     """
     url = hub_server + "spender.desi-edr.starae-2e33f4e5.pt"
     return _desi_model(url, **kwargs)
+
+def desi_edr_galaxy_flow(**kwargs):
+    """Normalizing flow model for the DESI EDR BGS spender latent space.
+
+    See spender papers for details:
+        Liang at al. (2023b): arXiv:2307.07664
+    """
+    url = hub_server + "spender.desi-edr.galaxyflow-b71f8966.pt"
+    n_latent = 6
+    return _load_flow_model(url, n_latent, **kwargs)
+
+def desi_edr_star_flow(**kwargs):
+    """Normalizing flow model for the DESI EDR MWS spender latent space.
+
+    See spender papers for details:
+        Liang at al. (2023b): arXiv:2307.07664
+    """
+    url = hub_server + "spender.desi-edr.starflow-a6ff6fcf.pt"
+    n_latent = 6
+    return _load_flow_model(url, n_latent, **kwargs)

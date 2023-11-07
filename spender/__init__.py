@@ -1,6 +1,7 @@
 import torch
 import torch.hub
 
+from .flow import NeuralDensityEstimator
 from .instrument import LSF, Instrument
 from .model import (MLP, SpectrumAutoencoder, SpectrumDecoder, SpectrumEncoder,
                     SpeculatorActivation)
@@ -85,3 +86,18 @@ def load_model(filename, instrument, **kwargs):
         model.load_state_dict(model_struct["model"], strict=False)
 
     return model
+
+def load_flow_model(filename, n_latent, **kwargs):
+    nde = NeuralDensityEstimator(
+        dim=n_latent,
+        initial_pos={"bounds": [[0, 0]] * n_latent, "std": [0.05] * n_latent},
+    )
+
+    # load model_struct from hub if url is given
+    if filename[:4].lower() == "http":
+        kwargs.pop("check_hash", True)  # remove check_hash
+        model_struct = torch.hub.load_state_dict_from_url(filename, check_hash=True, **kwargs)
+    else:
+        model_struct = torch.load(filename, **kwargs)
+    nde.load_state_dict(model_struct)
+    return nde
