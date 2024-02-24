@@ -25,5 +25,6 @@ setup(
         "Topic :: Scientific/Engineering :: Astronomy"
     ],
     keywords = ['spectroscopy','autoencoder'],
-    install_requires=["torch", "numpy", "accelerate", "torchinterp1d", "astropy", "humanize", "psutil", "GPUtil"]
+    install_requires=["torch", "numpy", "accelerate", "astropy", "humanize", "psutil", "GPUtil", "nflows", 
+                      "torchinterp1d @ git+https://github.com/aliutkus/torchinterp1d.git#egg=torchinterp1d"]
 )
