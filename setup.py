@@ -25,5 +25,5 @@ setup(
         "Topic :: Scientific/Engineering :: Astronomy"
     ],
     keywords = ['spectroscopy','autoencoder'],
-    install_requires=["torch", "numpy", "accelerate", "torchinterp1d", "astropy", "humanize", "psutil", "GPUtil"]
+    install_requires=["torch", "numpy", "accelerate", "torchinterp1d", "astropy", "humanize", "psutil", "GPUtil", "nflows"]
 )
