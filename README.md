@@ -63,8 +63,7 @@ from accelerate import Accelerator
 accelerator = Accelerator(mixed_precision='fp16')
 
 # get code, instrument, and pretrained spectrum model from the hub
-code_dir = os.path.dirname(spender.__file__)
-sdss, model = torch.hub.load(code_dir, 'sdss_II',  map_location=accelerator.device)
+sdss, model = spender.hub.load('sdss_II',  map_location=accelerator.device)
 
 # get some SDSS spectra from the ids, store locally in data_path
 data_path = "./DATA"
