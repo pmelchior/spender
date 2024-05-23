@@ -1,6 +1,6 @@
 import torch
 import torch.hub
-
+from . import hub
 from .flow import NeuralDensityEstimator
 from .instrument import LSF, Instrument
 from .model import (MLP, SpectrumAutoencoder, SpectrumDecoder, SpectrumEncoder,

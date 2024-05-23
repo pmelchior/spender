@@ -13,33 +13,33 @@ We decided to do the opposite. We build a custom architecture, which describes t
 
 Doing so clearly separates the responsibilities in the architecture. Spender establishes a restframe that has higher resolution and larger wavelength range than the spectra from which it is trained. The model can be trained from spectra at different redshifts or even from different instruments without the need to standardize the observations. Spender also has an explicit, differentiable redshift dependence, which can be coupled with a redshift estimator for a fully data-driven spectrum analysis pipeline.
 
-## Installation (optional: for development)
+## Installation
 
-The easiest way is `pip install spender`. When installing from the code repo, run `pip install -e .`.
+The easiest way is `pip install spender`. When installing from a downloaded code repo, run `pip install -e .`.
 
 For the time being, you will have to install one dependency manually: `torchinterp1d` is available [here](https://github.com/aliutkus/torchinterp1d).
 
-## Pretrained models (requires no spender install)
+## Pretrained models
 
-We make the best-fitting models discussed in the paper available through the Astro Data Lab Hub. Here's a workflow:
+We make the best-fitting models discussed in the paper available through the Astro Data Lab Hub. Here's the workflow:
 
 ```python
-import torch.hub
-github = "pmelchior/spender"
+import os
+import spender
 
-# get the spender code and show list of pretrained models
-torch.hub.list(github)
+# show list of pretrained models
+spender.hub.list()
 
 # print out details for SDSS model from paper II
-print(torch.hub.help(github, 'sdss_II'))
+print(spender.hub.help('sdss_II'))
 
 # load instrument and spectrum model from the hub
-sdss, model = torch.hub.load(github, 'sdss_II')
+sdss, model = spender.hub.load('sdss_II')
 
 # if your machine does not have GPUs, specify the device
 from accelerate import Accelerator
 accelerator = Accelerator(mixed_precision='fp16')
-sdss, model = torch.hub.load(github, 'sdss_II', map_location=accelerator.device)
+sdss, model = spender.hub.load('sdss_II', map_location=accelerator.device)
 ```
  
 ## Outliers Catalogs
@@ -54,6 +54,8 @@ Documentation and tutorials are forthcoming. In the meantime, check out `train/d
 
 In short, you can run spender like this:
 ```python
+import os
+import spender
 import torch
 from accelerate import Accelerator
 
@@ -61,14 +63,13 @@ from accelerate import Accelerator
 accelerator = Accelerator(mixed_precision='fp16')
 
 # get code, instrument, and pretrained spectrum model from the hub
-github = "pmelchior/spender"
-sdss, model = torch.hub.load(github, 'sdss_II',  map_location=accelerator.device)
+code_dir = os.path.dirname(spender.__file__)
+sdss, model = torch.hub.load(code_dir, 'sdss_II',  map_location=accelerator.device)
 
 # get some SDSS spectra from the ids, store locally in data_path
-from spender.data.sdss import SDSS
 data_path = "./DATA"
 ids = ((412, 52254, 308), (412, 52250, 129))
-spec, w, z, norm, zerr = SDSS.make_batch(data_path, ids)
+spec, w, z, norm, zerr = sdss.make_batch(data_path, ids)
 
 # run spender end-to-end
 with torch.no_grad():
