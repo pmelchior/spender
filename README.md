@@ -17,8 +17,6 @@ Doing so clearly separates the responsibilities in the architecture. Spender est
 
 The easiest way is `pip install spender`. When installing from a downloaded code repo, run `pip install -e .`.
 
-For the time being, you will have to install one dependency manually: `torchinterp1d` is available [here](https://github.com/aliutkus/torchinterp1d).
-
 ## Pretrained models
 
 We make the best-fitting models discussed in the paper available through the Astro Data Lab Hub. Here's the workflow:
