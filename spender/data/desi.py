@@ -12,7 +12,7 @@ import numpy as np
 import torch
 import pickle
 from torch.utils.data import DataLoader
-from torchinterp1d import Interp1d
+from torchinterp1d import interp1d
 import h5py
 
 from ..instrument import Instrument, get_skyline_mask
@@ -551,16 +551,14 @@ class DESI(Instrument):
             wave_redshifted =  (wave_obs.unsqueeze(1) * zfactor).T
 
             # redshift interpolation
-            spec_new = Interp1d()(wave_obs.repeat(batch_size,1), spec, wave_redshifted).float()
+            spec_new = interp1d(wave_obs.repeat(batch_size,1), spec, wave_redshifted).float()
             # ensure extrapolated values have zero weights
             wmin = wave_obs.min()
             wmax = wave_obs.max()
 
             # ensure extrapolated values have zero weights
             w_new = torch.clone(w)
-            w_new = Interp1d()(wave_obs.repeat(batch_size,1),
-                               w_new, wave_redshifted).float()
-            #w_new = torch.nn.functional.relu(w_new)
+            w_new = interp1d(wave_obs.repeat(batch_size,1), w_new, wave_redshifted).float()
 
             out = (wave_redshifted<wmin)|(wave_redshifted>wmax)
 
