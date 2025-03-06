@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from torchinterp1d import interp1d
+from .util import interp1d
 from .util import calc_normalization
 
 
@@ -312,7 +312,7 @@ class SpectrumDecoder(nn.Module):
             spectrum = self.transform(spectrum, instrument=instrument, z=z)
         return spectrum
 
-    def transform(self, x, instrument=None, z=0):
+    def transform(self, x, instrument=None, z=None):
         """Transformations from restframe to observed frame
 
         Parameter
@@ -329,7 +329,9 @@ class SpectrumDecoder(nn.Module):
         y: `torch.tensor`, shape (N, L)
             Batch of spectra at redshift `z` as observed by `instrument`
         """
-        wave_redshifted = (self.wave_rest.unsqueeze(1) * (1 + z)).T
+        if z is None:
+            z = torch.zeros(len(x))
+        wave_redshifted = self.wave_rest[None,:] * (1 + z[:, None])
 
         if instrument in [False, None]:
             wave_obs = self.wave_rest

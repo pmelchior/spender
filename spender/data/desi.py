@@ -12,11 +12,10 @@ import numpy as np
 import torch
 import pickle
 from torch.utils.data import DataLoader
-from torchinterp1d import interp1d
 import h5py
 
 from ..instrument import Instrument, get_skyline_mask
-from ..util import BatchedFilesDataset, load_batch
+from ..util import BatchedFilesDataset, interp1d, load_batch
 
 
 class DESI(Instrument):
