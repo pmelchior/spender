@@ -312,7 +312,7 @@ class SpectrumDecoder(nn.Module):
             spectrum = self.transform(spectrum, instrument=instrument, z=z)
         return spectrum
 
-    def transform(self, x, instrument=None, z=None):
+    def transform(self, x, instrument=None, z=None, return_valid=False):
         """Transformations from restframe to observed frame
 
         Parameter
@@ -323,6 +323,9 @@ class SpectrumDecoder(nn.Module):
             Instrument to generate spectrum for
         z: `torch.tensor`, shape (N, 1)
             Redshifts for each spectrum
+        return_valid: bool
+            Whether the range of valid wavelength in the model is returned
+            Whatever this flag, the model is set to 0 at invalid wavelengths.
 
         Returns
         -------
@@ -340,6 +343,11 @@ class SpectrumDecoder(nn.Module):
 
         spectrum = interp1d(wave_redshifted, x, wave_obs)
 
+        # need to zero out parts of the spectrum that our outside of the restframe range (see #34)
+        valid = wave_obs[None,:] > self.wave_rest[0] * (1 + z[:,None])
+        valid &= wave_obs[None,:] < self.wave_rest[-1] * (1 + z[:,None])
+        spectrum[~valid] = 0
+
         # convolve with LSF
         if instrument.lsf is not None:
             spectrum = instrument.lsf(spectrum.unsqueeze(1)).squeeze(1)
@@ -348,6 +356,8 @@ class SpectrumDecoder(nn.Module):
         if instrument is not None and instrument.calibration is not None:
             spectrum = instrument.calibration(wave_obs, spectrum)
 
+        if return_valid:
+            return spectrum, valid
         return spectrum
 
     @property
@@ -477,17 +487,17 @@ class BaseAutoencoder(nn.Module):
         # make restframe model spectrum
         restframe = self.decode(s)
         # make resampled and interpolated reconstruction
-        reconstruction = self.decoder.transform(restframe, instrument=instrument, z=z)
+        reconstruction, valid = self.decoder.transform(restframe, instrument=instrument, z=z, return_valid=True)
 
         # normalize restframe and reconstruction to observed spectrum
         if normalize:
             if weights is None: # vmap requires tensors
                 weights = torch.ones_like(y)
             restframe, reconstruction = torch.vmap(self.normalize)(
-                y, weights, restframe, reconstruction
+                y, weights * valid, restframe, reconstruction
             )
 
-        return s, restframe, reconstruction
+        return s, restframe, reconstruction, valid
 
     def forward(self, y, instrument=None, z=None, s=None, normalize=False, weights=None):
         """Forward method
@@ -515,7 +525,7 @@ class BaseAutoencoder(nn.Module):
         y: `torch.tensor`, shape (N, L)
             Batch of spectra at redshift `z` as observed by `instrument`
         """
-        s, x, y_ = self._forward(y, instrument=instrument, z=z, s=s, normalize=normalize, weights=weights)
+        s, x, y_, valid = self._forward(y, instrument=instrument, z=z, s=s, normalize=normalize, weights=weights)
 
         return y_
 
@@ -545,17 +555,17 @@ class BaseAutoencoder(nn.Module):
         -------
         float or `torch.tensor`, shape (N,) of weighted MSE loss
         """
-        y_ = self.forward(y, instrument=instrument, z=z, s=s, normalize=normalize)
-        return self._loss(y, w, y_, individual=individual)
+        s, x, y_, valid = self._forward(y, instrument=instrument, z=z, s=s, normalize=normalize)
+
+        return self._loss(y, w * valid, y_, individual=individual)
 
     def _loss(self, y, w, y_, individual=False):
         # loss = total squared deviation in units of variance
         # if the model is identical to observed spectrum (up to the noise),
         # then loss per object = D (number of non-zero bins)
-
         # to make it to order unity for comparing losses, divide out L (number of bins)
         # instead of D, so that spectra with more valid bins have larger impact
-        loss_ind = torch.sum(0.5 * w * (y - y_).pow(2), dim=1) / y.shape[1]
+        loss_ind = torch.sum(0.5 * w * valid * (y - y_).pow(2), dim=1) / y.shape[1]
 
         if individual:
             return loss_ind
