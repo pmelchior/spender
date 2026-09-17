@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "spender"
+version = "0.2.9"
+description = "Spectrum encoder and decoder"
+readme = { file = "README.md", content-type = "text/markdown" }
+license = { text = "MIT" }
+authors = [
+    { name = "Peter Melchior", email = "peter.m.melchior@gmail.com" }
+]
+keywords = ["spectroscopy", "autoencoder"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: MIT License",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Education",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
+    "Topic :: Scientific/Engineering :: Astronomy",
+]
+dependencies = [
+    "torch",
+    "numpy",
+    "accelerate",
+    "torchinterp1d",
+    "astropy",
+    "humanize",
+    "psutil",
+    "GPUtil",
+    "nflows",
+]
+
+[project.urls]
+Homepage = "https://github.com/pmelchior/spender"
+
+[tool.setuptools]
+packages = ["spender", "spender.data"]
+
+[tool.setuptools.package-data]
+"spender.data" = ["*.txt"]
