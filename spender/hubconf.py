@@ -32,7 +32,7 @@ def sdss_I(**kwargs):
     This model has S=10 latents and a restframe resolution R=5881 for a maximum redshift of z_max=0.5.
 
     See Spender paper I for details:
-        Melchior et al. (2022): arXiv:2211.07890
+        Melchior et al. (2023), AJ, 166, 74
 
     """
     filename = "spender.sdss.paperI-08798cbc.pt"
@@ -44,7 +44,7 @@ def sdss_I_superres(**kwargs):
     This model has S=8 latents and a restframe resolution R=11762 for a maximum redshift of z_max=0.5.
 
     See Spender paper I (section 4.2) for details:
-        Melchior et al. (2022): arXiv:2211.07890
+        Melchior et al. (2023), AJ, 166, 74
 
     """
     filename = "spender.sdss.paperI.superres-0403266c.pt"
@@ -57,8 +57,8 @@ def sdss_II(**kwargs):
     It has been trained with fidelity, similarity, and consistency losses to provide a redshift-invariant latent space.
 
     See spender papers for details:
-        Liang at al. (2023): arXiv:2302.02496
-        Melchior et al. (2022): arXiv:2211.07890
+        Liang et al. (2023a), AJ, 166, 75
+        Melchior et al. (2023), AJ, 166, 74
     """
     filename = "spender.sdss.paperII-c273bb69.pt"
     return _sdss_model(filename, **kwargs)
@@ -67,8 +67,8 @@ def sdss_II_galaxy_flow(**kwargs):
     """Normalizing flow model for the spender latent space of the SDSS main galaxy sample.
 
     See spender papers for details:
-        Liang at al. (2023): arXiv:2302.02496
-        Melchior et al. (2022): arXiv:2211.07890
+        Liang et al. (2023a), AJ, 166, 75
+        Melchior et al. (2023), AJ, 166, 74
     """
     filename = "spender.sdss.paperII.galaxyflow-e6230ef8.pt"
     n_latent = 6
@@ -82,9 +82,9 @@ def desi_edr_galaxy(**kwargs):
     It has been trained with fidelity, similarity, and consistency losses to provide a redshift-invariant latent space.
 
     See spender papers for details:
-        Liang at al. (2023b): arXiv:2307.07664
-        Liang at al. (2023a): arXiv:2302.02496
-        Melchior et al. (2022): arXiv:2211.07890
+        Liang et al. (2023b), ApJL, 956, L6
+        Liang et al. (2023a), AJ, 166, 75
+        Melchior et al. (2023), AJ, 166, 74
     """
     filename = "spender.desi-edr.galaxyae-b9bc8d12.pt"
     return _desi_model(filename, **kwargs)
@@ -96,9 +96,9 @@ def desi_edr_star(**kwargs):
     It has been trained with fidelity, and similarity but not consistency loss.
 
     See spender papers for details:
-        Liang at al. (2023b): arXiv:2307.07664
-        Liang at al. (2023a): arXiv:2302.02496
-        Melchior et al. (2022): arXiv:2211.07890
+        Liang et al. (2023b), ApJL, 956, L6
+        Liang et al. (2023a), AJ, 166, 75
+        Melchior et al. (2023), AJ, 166, 74
     """
     filename = "spender.desi-edr.starae-2e33f4e5.pt"
     return _desi_model(filename, **kwargs)
@@ -107,8 +107,10 @@ def desi_edr_galaxy_flow(**kwargs):
     """Normalizing flow model for the DESI EDR BGS spender latent space.
 
     See spender papers for details:
-        Liang at al. (2023b): arXiv:2307.07664
-    """
+        Liang et al. (2023b), ApJL, 956, L6
+        Liang et al. (2023a), AJ, 166, 75
+        Melchior et al. (2023), AJ, 166, 74
+   """
     filename = "spender.desi-edr.galaxyflow-b71f8966.pt"
     n_latent = 6
     path = _download(filename)
@@ -118,7 +120,9 @@ def desi_edr_star_flow(**kwargs):
     """Normalizing flow model for the DESI EDR MWS spender latent space.
 
     See spender papers for details:
-        Liang at al. (2023b): arXiv:2307.07664
+        Liang et al. (2023b), ApJL, 956, L6
+        Liang et al. (2023a), AJ, 166, 75
+        Melchior et al. (2023), AJ, 166, 74
     """
     filename = "spender.desi-edr.starflow-a6ff6fcf.pt"
     n_latent = 6
