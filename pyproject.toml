@@ -32,6 +32,7 @@ dependencies = [
     "psutil",
     "GPUtil",
     "nflows",
+    "huggingface_hub",
 ]
 
 [project.urls]

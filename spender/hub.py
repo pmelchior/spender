@@ -1,7 +1,8 @@
 # Modification of torch.hub to provide list(), help(), load() for local code directories
-# hubconf.py is now a symlink to the main code dir, so that it will be copied into the package with a pip install
-# this way, code and model are always consistent, and we avoid a cached code download
-# regular torch.hub use is still possible but not encouraged because it doesn't deal with dependencies. use pip instead!
+# hubconf.py lives inside the spender package itself, so code and model are always
+# consistent and we avoid a cached code download. This intentionally does not support
+# remote `torch.hub.load("pmelchior/spender", ...)`, which requires hubconf.py at a repo
+# root; install with pip and use spender.hub instead.
 
 import os
 from torch.hub import _add_to_sys_path, _import_module, _load_entry_from_hubconf, _load_local, MODULE_HUBCONF, get_dir
