@@ -96,6 +96,11 @@ Plotting the results of the above nicely shows what spender can do:
 
 Noteworthy aspects: The restframe model has an extended wavelength range, e.g. predicting the [O II] doublet that was not observed in the first example, and being unaffected by glitches like the skyline residuals at about 5840 A in the second example.
 
+In addition, the latents vectors `s` form a highly informative distribution, from which we can read off physical properties like star-formation rate (e.g. the H-alpha intensity) in a redshift-independent way:
+
+![embedding](https://github.com/user-attachments/assets/8448f916-a933-47fb-92cc-aba199e38adf)
+
+
 ## Citation
 
 If you make use of this code, please cite the following paper:
@@ -119,3 +124,5 @@ archivePrefix = {arXiv},
       adsnote = {Provided by the SAO/NASA Astrophysics Data System}
 }
 ```
+
+If you use specific models from the hub, please cite the papers listed by `spender.hub.help(model_name)`.
