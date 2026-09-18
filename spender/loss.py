@@ -14,10 +14,16 @@ class LossConfig:
     :func:`restframe_weight`, and :func:`similarity_restframe` in one place, so that
     training scripts can adjust them without editing the loss functions themselves.
 
+    `consistency_amp` and `similarity_amp` are not applied inside :func:`consistency_loss`
+    or :func:`similarity_restframe_loss` themselves: :func:`get_losses` returns the raw,
+    unweighted losses, and it is up to the caller (typically the training script) to
+    combine them with these amplitudes into the loss used for backpropagation.
+
     Parameters
     ----------
     consistency_amp: float
-        Amplitude of :func:`consistency_loss` to tune its relation to the fidelity loss
+        Weight of the consistency loss relative to the fidelity loss, applied by the
+        caller when combining losses for backpropagation
     consistency_tol: float
         Tolerance of :func:`consistency_loss` for latent drift under augmentation;
         smaller values penalize drift more strongly
@@ -25,9 +31,11 @@ class LossConfig:
         Width of the no-penalty region around equal (dis)similarity in
         :func:`similarity_loss`
     similarity_amp: float
-        Amplitude of :func:`similarity_loss` to tune its relation to the fidelity loss
-    similarity_data_weight: float
-        Weighting of the spectrum dissimilarity in the similarity loss
+        Weight of the similarity loss relative to the fidelity loss, applied by the
+        caller when combining losses for backpropagation
+    similarity_data_amp: float
+        Weighting of the spectrum dissimilarity relative to the latent dissimilarity
+        inside the similarity loss
     restframe_mu: float
         Center of the :func:`restframe_weight` Gaussian window, in restframe wavelength
     restframe_sigma: float
@@ -125,9 +133,8 @@ def similarity_loss(instrument, model, spec, w, z, s, slope=0.5, individual=Fals
         Whether the pairwise dissimilarities are returned instead of the
         aggregated loss
     config: :class:`LossConfig`
-        Loss hyperparameters. Uses `LossConfig.similarity_wid` and
-        `LossConfig.similarity_amp`. If `None`, the defaults of :class:`LossConfig`
-        are used.
+        Loss hyperparameters. Uses `LossConfig.similarity_wid`. If `None`, the
+        defaults of :class:`LossConfig` are used.
 
     Returns
     -------
@@ -137,9 +144,10 @@ def similarity_loss(instrument, model, spec, w, z, s, slope=0.5, individual=Fals
         Pairwise dissimilarity of restframe spectra, weighted by their combined
         variance (only returned if `individual`)
     sim_loss: `torch.tensor`, shape (N, N), or float
-        Similarity loss that penalizes latent and spectral (dis)similarities that
-        disagree; the diagonal is masked out. If `individual` is False, this is
-        summed and normalized into a single float.
+        Similarity loss (not weighted by `LossConfig.similarity_amp`) that penalizes
+        latent and spectral (dis)similarities that disagree; the diagonal is masked
+        out. If `individual` is False, this is summed and normalized into a single
+        float.
     """
     if config is None:
         config = LossConfig()
@@ -169,13 +177,11 @@ def similarity_loss(instrument, model, spec, w, z, s, slope=0.5, individual=Fals
 
     # only give large loss of (dis)similarities are different (either way)
     x = s_sim - spec_sim
-    sim_loss = config.similarity_amp * (
-        torch.sigmoid(slope * x - 0.5 * config.similarity_wid) +
-        torch.sigmoid(-slope * x - 0.5 * config.similarity_wid)
+    sim_loss = torch.sigmoid(slope * x - 0.5 * config.similarity_wid) + torch.sigmoid(
+        -slope * x - 0.5 * config.similarity_wid
     )
     diag_mask = torch.diag(torch.ones(batch_size, device=device, dtype=bool))
     sim_loss[diag_mask] = 0
-    sim_loss *=
 
     if individual:
         return s_sim, spec_sim, sim_loss
@@ -228,9 +234,9 @@ def similarity_restframe_loss(model, s=None, individual=False, config: Optional[
         aggregated loss
     config: :class:`LossConfig`
         Loss hyperparameters. Uses `LossConfig.similarity_slope`,
-        `LossConfig.restframe_wid`, and `LossConfig.restframe_bound`, and is
-        forwarded to :func:`restframe_weight`. If `None`, the defaults of
-        :class:`LossConfig` are used.
+        `LossConfig.similarity_data_amp`, `LossConfig.similarity_wid`, and
+        `LossConfig.restframe_bound`, and is forwarded to :func:`restframe_weight`.
+        If `None`, the defaults of :class:`LossConfig` are used.
 
     Returns
     -------
@@ -240,9 +246,10 @@ def similarity_restframe_loss(model, s=None, individual=False, config: Optional[
         Pairwise dissimilarity of decoded restframe spectra, weighted by
         `restframe_weight` (only returned if `individual`)
     sim_loss: `torch.tensor`, shape (N, N), or float
-        Similarity loss that penalizes latent and spectral (dis)similarities that
-        disagree; the diagonal is masked out. If `individual` is False, this is
-        summed and normalized into a single float.
+        Similarity loss (not weighted by `LossConfig.similarity_amp`) that penalizes
+        latent and spectral (dis)similarities that disagree; the diagonal is masked
+        out. If `individual` is False, this is summed and normalized into a single
+        float.
     """
     if config is None:
         config = LossConfig()
@@ -267,9 +274,8 @@ def similarity_restframe_loss(model, s=None, individual=False, config: Optional[
     # only give large loss of (dis)similarities are different (either way)
     x = s_sim - config.similarity_data_amp * spec_sim
     slope = config.similarity_slope
-    sim_loss = config.similarity_amp * (
-        torch.sigmoid(slope * x - 0.5 * config.similarity_wid) +
-        torch.sigmoid(-slope * x - 0.5 * config.similarity_wid)
+    sim_loss = torch.sigmoid(slope * x - 0.5 * config.similarity_wid) + torch.sigmoid(
+        -slope * x - 0.5 * config.similarity_wid
     )
     diag_mask = torch.diag(torch.ones(batch_size, device=device, dtype=bool))
     sim_loss[diag_mask] = 0
@@ -288,8 +294,50 @@ def get_losses(model,
                similarity=True,
                consistency=True,
                loss_config=None,
-               ):
+):
+    """Fidelity, similarity, and consistency losses for a batch
 
+    Convenience wrapper that computes the three losses training scripts typically
+    need for a batch: the model's fidelity loss, :func:`similarity_restframe_loss`,
+    and :func:`consistency_loss`. The similarity and consistency losses are returned
+    raw, without the `LossConfig.similarity_amp` and `LossConfig.consistency_amp`
+    weights applied; the caller is responsible for combining the three returned
+    losses (e.g. `loss + config.similarity_amp * sim_loss +
+    config.consistency_amp * cons_loss`) into the value used for backpropagation.
+
+    Parameters
+    ----------
+    model: :class:`spender.BaseAutoencoder`
+        Autoencoder model to encode and evaluate `batch` with
+    instrument: :class:`spender.Instrument`
+        Instrument that observed `batch`
+    batch: tuple of `torch.tensor`
+        `(spec, w, z)` tuple of observed spectra, inverse-variance weights, and
+        redshifts, as produced by the data loader
+    aug_fct: callable
+        (optional) Function that returns an augmented copy of `batch`, used to
+        compute the consistency loss. If `None`, the consistency loss is not
+        computed
+    similarity: bool
+        Whether to compute the similarity loss
+    consistency: bool
+        Whether to compute the consistency loss (requires `aug_fct`)
+    loss_config: :class:`LossConfig`
+        Loss hyperparameters, forwarded to :func:`similarity_restframe_loss` and
+        :func:`consistency_loss`. If `None`, the defaults of :class:`LossConfig`
+        are used.
+
+    Returns
+    -------
+    loss: `torch.tensor`
+        Fidelity loss between `batch` and its reconstruction
+    sim_loss: `torch.tensor`, or float
+        Similarity loss, not weighted by `LossConfig.similarity_amp`; 0 if
+        `similarity` is False
+    cons_loss: `torch.tensor`, or float
+        Consistency loss, not weighted by `LossConfig.consistency_amp`; 0 if
+        `consistency` is False or `aug_fct` is `None`
+    """
     spec, w, z = batch
     s = model.encode(spec)
     loss = model.loss(spec, w, instrument, z=z, s=s)
@@ -300,7 +348,7 @@ def get_losses(model,
         sim_loss = 0
 
     if consistency and aug_fct is not None:
-        spec_, w_, z_ = aug_fct(batch, z_max=args.z_max)
+        spec_, w_, z_ = aug_fct(batch)
         s_ = model.encode(spec_)
         cons_loss = consistency_loss(s, s_, config=loss_config)
     else:

@@ -127,8 +127,8 @@ def train(models,
     validloaders = [accelerator.prepare(loader) for loader in validloaders]
     optimizer = accelerator.prepare(optimizer)
 
-    # define losses to track
-    n_loss = 5
+    # define losses to track: fidelity, similarity, consistency
+    n_loss = 3
     epoch = 0
     if losses is None:
         detailed_loss = np.zeros((2, n_encoder, n_epoch, n_loss))
@@ -191,8 +191,9 @@ def train(models,
                     consistency=consistency,
                     loss_config=loss_config,
                 )
-                # sum up all losses
-                loss = functools.reduce(lambda a, b: a+b , losses)
+                # weighted combination of the individual losses for backprop
+                fidelity_loss, sim_loss, cons_loss = losses
+                loss = fidelity_loss + loss_config.similarity_amp * sim_loss + loss_config.consistency_amp * cons_loss
                 accelerator.backward(loss)
                 # clip gradients: stabilizes training with similarity
                 accelerator.clip_grad_norm_(model_parameters[0]['params'], 1.0)
@@ -293,7 +294,7 @@ if __name__ == "__main__":
 
     # get augmentation function
     if args.augmentation:
-        aug_fcts = [ desi.DESI().augment_spectra ]
+        aug_fcts = [ functools.partial(desi.DESI().augment_spectra, z_max=args.z_max) ]
     else:
         aug_fcts = [ None ]
 

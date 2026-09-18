@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 
 import argparse
-import functools
 import os
 import time
 
@@ -57,6 +56,12 @@ def get_all_parameters(models,instruments):
         print("parameter dict:",dicts[1])
     return dicts,n_parameters
 
+# per-instrument hyperparameters of the similarity and consistency losses
+# (currently identical for both instruments, kept separate for future tuning)
+DEFAULT_LOSS_CONFIGS = {
+    "SDSS": LossConfig(consistency_tol=0.1, restframe_mu=5000, restframe_sigma=1000, similarity_data_amp=20),
+    "BOSS": LossConfig(consistency_tol=0.1, restframe_mu=5000, restframe_sigma=1000, similarity_data_amp=20),
+}
 
 def checkpoint(accelerator, args, optimizer, scheduler, n_encoder, outfile, losses):
     unwrapped = [accelerator.unwrap_model(args_i).state_dict() for args_i in args]
@@ -122,12 +127,8 @@ def train(models,
     trainloaders = [accelerator.prepare(loader) for loader in trainloaders]
     validloaders = [accelerator.prepare(loader) for loader in validloaders]
     optimizer = accelerator.prepare(optimizer)
-    # per-instrument hyperparameters of the similarity and consistency losses
-    CONFIGS = {
-        "SDSS": LossConfig(consistency_tol=0.1, restframe_mu=5000, restframe_sigma=1000, similarity_data_amp=20),
-        "BOSS": LossConfig(consistency_tol=0.1, restframe_mu=5000, restframe_sigma=1000, similarity_data_amp=20),
-    }
-    loss_configs = [CONFIGS[instrument.__class__.__name__] for instrument in instruments]
+    if loss_configs is None:
+        loss_configs = [DEFAULT_LOSS_CONFIGS[instrument.__class__.__name__] for instrument in instruments]
 
     # define losses to track
     n_loss = 3
@@ -162,6 +163,8 @@ def train(models,
 
         slope = ANNEAL_SCHEDULE[(epoch_ - epoch)%len(ANNEAL_SCHEDULE)]
         if n_epoch-epoch_<=10: slope=0 # turn off similarity
+        for config in loss_configs:
+            config.similarity_slope = slope
 
         if verbose and similarity:
             print("similarity info:",slope)
@@ -189,11 +192,12 @@ def train(models,
                     aug_fct=aug_fcts[which],
                     similarity=similarity,
                     consistency=consistency,
-                    slope=slope,
                     loss_config=loss_configs[which],
                 )
-                # sum up all losses
-                loss = functools.reduce(lambda a, b: a+b , losses)
+                # weighted combination of the individual losses for backprop
+                fidelity_loss, sim_loss, cons_loss = losses
+                config = loss_configs[which]
+                loss = fidelity_loss + config.similarity_amp * sim_loss + config.consistency_amp * cons_loss
                 accelerator.backward(loss)
                 # clip gradients: stabilizes training with similarity
                 accelerator.clip_grad_norm_(model_parameters[0]['params'], 1.0)
@@ -227,8 +231,7 @@ def train(models,
                         aug_fct=aug_fcts[which],
                         similarity=similarity,
                         consistency=consistency,
-                        slope=slope,
-                        loss_configs=loss_configs,
+                        loss_config=loss_configs[which],
                     )
                     # logging: validation
                     detailed_loss[1][which][epoch_] += tuple( l.item() if hasattr(l, 'item') else 0 for l in losses )
@@ -337,9 +340,8 @@ if __name__ == "__main__":
         model, losses = load_model(args.outfile, models, instruments)
 
     # hyperparameters of the similarity and consistency losses, per instrument;
-    # override entries here to tune training, e.g.
-    # loss_configs["SDSS"] = LossConfig(restframe_mu=6000)
-    loss_configs = dict(DEFAULT_LOSS_CONFIGS)
+    # override entries here to tune training, e.g. loss_configs[0].restframe_mu = 6000
+    loss_configs = [DEFAULT_LOSS_CONFIGS[instrument.__class__.__name__] for instrument in instruments]
 
     train(models, instruments, trainloaders, validloaders, n_epoch=n_epoch,
           n_batch=args.batch_number, lr=args.rate, aug_fcts=aug_fcts, similarity=args.similarity, consistency=args.consistency, outfile=args.outfile, losses=losses, verbose=args.verbose, loss_configs=loss_configs)
