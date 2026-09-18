@@ -2,9 +2,9 @@
 
 _Neural spectrum encoder and decoder_
 
-* Paper I (SDSS): https://arxiv.org/abs/2211.07890
-* Paper II (SDSS): https://arxiv.org/abs/2302.02496
-* Paper III (DESI EDR): https://arxiv.org/abs/2307.07664
+* Paper I (SDSS): Peter Melchior et al. (2023) [AJ 166 74](https://doi.org/10.3847/1538-3881/ace0ff)
+* Paper II (SDSS): Yan Liang et al (2023) [AJ 166 75](https://doi.org/10.3847/1538-3881/ace100)
+* Paper III (DESI EDR): Yan Liang et al (2023) [ApJL 956 L6](https://doi.org/10.3847/2041-8213/acfa03)
 
 From a data-driven side, galaxy spectra have two fundamental degrees of freedom: their instrinsic spectral properties (or type, if you believe in such a thing) and their redshift. The latter makes them awkward to ingest because it stretches everything, which means spectral features don't appear at the same places. This is why most analyses of the intrinsic properties are done by transforming the observed spectrum to restframe.
 
@@ -42,9 +42,17 @@ sdss, model = spender.hub.load('sdss_II', map_location=accelerator.device)
  
 ## Outliers Catalogs
 
-catalog of latent-space probabilities for
-* [SDSS-I main galaxy sample](https://hub.pmelchior.net/spender.sdss.paperII.logP.txt.bz2); see Liang et al. (2023a) for details
-* [DESI EDR BGS sample](https://hub.pmelchior.net/spender.desi-edr.full-bgs-objects-logP.txt.bz2); see Liang et al. (2023b) for details
+Catalogs of latent-space probabilities, stored as Parquet files on the [spender-catalogs](https://huggingface.co/datasets/pmelchior/spender-catalogs) dataset repo:
+* SDSS-I main galaxy sample, keyed by `PLATE-MJD-FIBERID`; see Liang et al. (2023a) for details
+* DESI EDR BGS sample, keyed by `target_id`; see Liang et al. (2023b) for details
+
+```python
+from huggingface_hub import hf_hub_download
+import pandas as pd
+
+path = hf_hub_download(repo_id="pmelchior/spender-catalogs", repo_type="dataset", filename="spender.sdss.paperII.logP.parquet")
+catalog = pd.read_parquet(path)
+```
 
 ## Use
 
@@ -88,7 +96,33 @@ Plotting the results of the above nicely shows what spender can do:
 
 Noteworthy aspects: The restframe model has an extended wavelength range, e.g. predicting the [O II] doublet that was not observed in the first example, and being unaffected by glitches like the skyline residuals at about 5840 A in the second example.
 
-In addition, the latents vectors `s` for a highly informative distribution, from which we can read off physical properties like star-formation rate (e.g. the H-alpha intensity) in a redshift-independent way:
+In addition, the latents vectors `s` form a highly informative distribution, from which we can read off physical properties like star-formation rate (e.g. the H-alpha intensity) in a redshift-independent way:
 
 ![embedding](https://github.com/user-attachments/assets/8448f916-a933-47fb-92cc-aba199e38adf)
 
+
+## Citation
+
+If you make use of this code, please cite the following paper:
+
+```
+@ARTICLE{2023AJ....166...74M,
+       author = {{Melchior}, Peter and {Liang}, Yan and {Hahn}, ChangHoon and {Goulding}, Andy},
+        title = "{Autoencoding Galaxy Spectra. I. Architecture}",
+      journal = {Astronomical Journal},
+         year = 2023,
+        month = aug,
+       volume = {166},
+       number = {2},
+          eid = {74},
+        pages = {74},
+          doi = {10.3847/1538-3881/ace0ff},
+archivePrefix = {arXiv},
+       eprint = {2211.07890},
+ primaryClass = {astro-ph.IM},
+       adsurl = {https://ui.adsabs.harvard.edu/abs/2023AJ....166...74M},
+      adsnote = {Provided by the SAO/NASA Astrophysics Data System}
+}
+```
+
+If you use specific models from the hub, please cite the papers listed by `spender.hub.help(model_name)`.
