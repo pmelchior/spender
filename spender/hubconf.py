@@ -63,6 +63,18 @@ def sdss_II(**kwargs):
     filename = "spender.sdss.paperII-c273bb69.pt"
     return _sdss_model(filename, **kwargs)
 
+def sdss_II_galaxy_flow(**kwargs):
+    """Normalizing flow model for the spender latent space of the SDSS main galaxy sample.
+
+    See spender papers for details:
+        Liang at al. (2023): arXiv:2302.02496
+        Melchior et al. (2022): arXiv:2211.07890
+    """
+    filename = "spender.sdss.paperII.galaxyflow-e6230ef8.pt"
+    n_latent = 6
+    path = _download(filename)
+    return _load_flow_model(path, n_latent, **kwargs)
+
 def desi_edr_galaxy(**kwargs):
     """Spectrum Autoencoder model for the DESI EDR Bright Galaxy Survey sample.
 
