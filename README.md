@@ -42,9 +42,17 @@ sdss, model = spender.hub.load('sdss_II', map_location=accelerator.device)
  
 ## Outliers Catalogs
 
-catalog of latent-space probabilities for
-* [SDSS-I main galaxy sample](https://hub.pmelchior.net/spender.sdss.paperII.logP.txt.bz2); see Liang et al. (2023a) for details
-* [DESI EDR BGS sample](https://hub.pmelchior.net/spender.desi-edr.full-bgs-objects-logP.txt.bz2); see Liang et al. (2023b) for details
+Catalogs of latent-space probabilities, stored as Parquet files on the [spender-catalogs](https://huggingface.co/datasets/pmelchior/spender-catalogs) dataset repo:
+* SDSS-I main galaxy sample, keyed by `PLATE-MJD-FIBERID`; see Liang et al. (2023a) for details
+* DESI EDR BGS sample, keyed by `target_id`; see Liang et al. (2023b) for details
+
+```python
+from huggingface_hub import hf_hub_download
+import pandas as pd
+
+path = hf_hub_download(repo_id="pmelchior/spender-catalogs", repo_type="dataset", filename="spender.sdss.paperII.logP.parquet")
+catalog = pd.read_parquet(path)
+```
 
 ## Use
 
