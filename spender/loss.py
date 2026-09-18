@@ -16,6 +16,8 @@ class LossConfig:
 
     Parameters
     ----------
+    consistency_amp: float
+        Amplitude of :func:`consistency_loss` to tune its relation to the fidelity loss
     consistency_tol: float
         Tolerance of :func:`consistency_loss` for latent drift under augmentation;
         smaller values penalize drift more strongly
@@ -23,29 +25,34 @@ class LossConfig:
         Width of the no-penalty region around equal (dis)similarity in
         :func:`similarity_loss`
     similarity_amp: float
-        Amplitude of :func:`similarity_loss`, to make it comparable to the fidelity loss
+        Amplitude of :func:`similarity_loss` to tune its relation to the fidelity loss
+    similarity_data_weight: float
+        Weighting of the spectrum dissimilarity in the similarity loss
     restframe_mu: float
         Center of the :func:`restframe_weight` Gaussian window, in restframe wavelength
     restframe_sigma: float
         Width of the :func:`restframe_weight` Gaussian window
-    restframe_amp: float
-        Peak amplitude of the :func:`restframe_weight` Gaussian window
     restframe_wid: float
         Width of the no-penalty region around equal (dis)similarity in
         :func:`similarity_restframe`
     restframe_bound: tuple of float, length 2
         Restframe wavelength range used by :func:`similarity_restframe` to normalize
         decoded spectra before comparison
+    similarity_slope: float
+        Steepness of the sigmoid that compares latent and spectral dissimilarity in
+        :func:`similarity_restframe_loss`. Training scripts typically anneal this
+        value over the course of training by updating this field directly.
     """
-
+    consistency_amp: float = 1
     consistency_tol: float = 0.5
     similarity_wid: float = 5
     similarity_amp: float = 3
+    similarity_data_amp: float = 30
     restframe_mu: float = 5000
     restframe_sigma: float = 2000
-    restframe_amp: float = 30
     restframe_wid: float = 5
     restframe_bound: Tuple[float, float] = (4000, 7000)
+    similarity_slope: float = 1.0
 
 
 def consistency_loss(s, s_aug, individual=False, config: Optional[LossConfig] = None):
@@ -162,17 +169,19 @@ def similarity_loss(instrument, model, spec, w, z, s, slope=0.5, individual=Fals
 
     # only give large loss of (dis)similarities are different (either way)
     x = s_sim - spec_sim
-    sim_loss = torch.sigmoid(slope * x - 0.5 * config.similarity_wid) + torch.sigmoid(
-        -slope * x - 0.5 * config.similarity_wid
+    sim_loss = config.similarity_amp * (
+        torch.sigmoid(slope * x - 0.5 * config.similarity_wid) +
+        torch.sigmoid(-slope * x - 0.5 * config.similarity_wid)
     )
     diag_mask = torch.diag(torch.ones(batch_size, device=device, dtype=bool))
     sim_loss[diag_mask] = 0
+    sim_loss *=
 
     if individual:
         return s_sim, spec_sim, sim_loss
     # total loss: sum over N^2 terms,
     # needs to have amplitude of N terms to compare to fidelity loss
-    return config.similarity_amp * sim_loss.sum() / batch_size
+    return sim_loss.sum() / batch_size
 
 
 def restframe_weight(model, config: Optional[LossConfig] = None):
@@ -186,8 +195,8 @@ def restframe_weight(model, config: Optional[LossConfig] = None):
     model: :class:`spender.BaseAutoencoder`
         Autoencoder model providing the restframe wavelength grid
     config: :class:`LossConfig`
-        Loss hyperparameters. Uses `LossConfig.restframe_mu`, `restframe_sigma`, and
-        `restframe_amp`. If `None`, the defaults of :class:`LossConfig` are used.
+        Loss hyperparameters. Uses `LossConfig.restframe_mu`, `restframe_sigma`.
+        If `None`, the defaults of :class:`LossConfig` are used.
 
     Returns
     -------
@@ -197,10 +206,10 @@ def restframe_weight(model, config: Optional[LossConfig] = None):
     if config is None:
         config = LossConfig()
     x = model.decoder.wave_rest
-    return config.restframe_amp * torch.exp(-(0.5 * (x - config.restframe_mu) / config.restframe_sigma) ** 2)
+    return torch.exp(-(0.5 * (x - config.restframe_mu) / config.restframe_sigma) ** 2)
 
 
-def similarity_restframe_loss(model, s=None, slope=1.0, individual=False, config: Optional[LossConfig] = None):
+def similarity_restframe_loss(model, s=None, individual=False, config: Optional[LossConfig] = None):
     """Similarity loss between decoded restframe spectra and their latents
 
     Like :func:`similarity_loss`, but compares decoded restframe spectra, normalized
@@ -214,15 +223,14 @@ def similarity_restframe_loss(model, s=None, slope=1.0, individual=False, config
         Autoencoder model used to decode `s` into restframe spectra
     s: `torch.tensor`, shape (N, S)
         Batch of latents to decode and compare
-    slope: float
-        Steepness of the sigmoid that compares latent and spectral dissimilarity
     individual: bool
         Whether the pairwise dissimilarities are returned instead of the
         aggregated loss
     config: :class:`LossConfig`
-        Loss hyperparameters. Uses `LossConfig.restframe_wid` and
-        `LossConfig.restframe_bound`, and is forwarded to :func:`restframe_weight`.
-        If `None`, the defaults of :class:`LossConfig` are used.
+        Loss hyperparameters. Uses `LossConfig.similarity_slope`,
+        `LossConfig.restframe_wid`, and `LossConfig.restframe_bound`, and is
+        forwarded to :func:`restframe_weight`. If `None`, the defaults of
+        :class:`LossConfig` are used.
 
     Returns
     -------
@@ -257,9 +265,11 @@ def similarity_restframe_loss(model, s=None, slope=1.0, individual=False, config
     s_sim = ((s[None, :, :] - s[:, None, :]) ** 2).sum(-1) / s_size
 
     # only give large loss of (dis)similarities are different (either way)
-    x = s_sim - spec_sim
-    sim_loss = torch.sigmoid(slope * x - config.restframe_wid / 2) + torch.sigmoid(
-        -slope * x - config.restframe_wid / 2
+    x = s_sim - config.similarity_data_amp * spec_sim
+    slope = config.similarity_slope
+    sim_loss = config.similarity_amp * (
+        torch.sigmoid(slope * x - 0.5 * config.similarity_wid) +
+        torch.sigmoid(-slope * x - 0.5 * config.similarity_wid)
     )
     diag_mask = torch.diag(torch.ones(batch_size, device=device, dtype=bool))
     sim_loss[diag_mask] = 0
@@ -270,3 +280,30 @@ def similarity_restframe_loss(model, s=None, slope=1.0, individual=False, config
     # total loss: sum over N^2 terms,
     # needs to have amplitude of N terms to compare to fidelity loss
     return sim_loss.sum() / batch_size
+
+def get_losses(model,
+               instrument,
+               batch,
+               aug_fct=None,
+               similarity=True,
+               consistency=True,
+               loss_config=None,
+               ):
+
+    spec, w, z = batch
+    s = model.encode(spec)
+    loss = model.loss(spec, w, instrument, z=z, s=s)
+
+    if similarity:
+        sim_loss = similarity_restframe_loss(model, s, config=loss_config)
+    else:
+        sim_loss = 0
+
+    if consistency and aug_fct is not None:
+        spec_, w_, z_ = aug_fct(batch, z_max=args.z_max)
+        s_ = model.encode(spec_)
+        cons_loss = consistency_loss(s, s_, config=loss_config)
+    else:
+        cons_loss = 0
+
+    return loss, sim_loss, cons_loss

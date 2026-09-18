@@ -10,7 +10,8 @@ import torch
 from accelerate import Accelerator
 from spender import SpectrumAutoencoder
 from spender.data.sdss import SDSS
-from spender.util import mem_report, resample_to_restframe
+from spender.loss import LossConfig, get_losses
+from spender.util import mem_report
 
 # allows one to run fp16_train.py from home directory
 import sys;sys.path.insert(1, './')
@@ -56,137 +57,6 @@ def get_all_parameters(models,instruments):
         print("parameter dict:",dicts[1])
     return dicts,n_parameters
 
-def consistency_loss(s, s_aug, individual=False):
-    batch_size, s_size = s.shape
-    x = torch.sum((s_aug - s)**2/1e-2,dim=1)/s_size
-    sim_loss = torch.sigmoid(x)-0.5 # zero = perfect alignment
-    if individual:
-        return x, sim_loss
-    return sim_loss.sum()
-
-def similarity_loss(instrument, model, spec, w, z, s, slope=0.5, individual=False, wid=5, amp=3):
-    spec,w = resample_to_restframe(instrument.wave_obs,
-                                   model.decoder.wave_rest,
-                                   spec,w,z)
-
-    batch_size, spec_size = spec.shape
-    _, s_size = s.shape
-    device = s.device
-
-    # pairwise dissimilarity of spectra
-    S = (spec[None,:,:] - spec[:,None,:])**2
-
-    # pairwise weights
-    non_zero = w > 1e-6
-    N = (non_zero[None,:,:] * non_zero[:,None,:])
-    W = (1 / w)[None,:,:] + (1 / w)[:,None,:]
-    W =  N / W
-
-    N = N.sum(-1)
-    N[N==0] = 1
-    # dissimilarity of spectra
-    # of order unity, larger for spectrum pairs with more comparable bins
-    spec_sim = (W * S).sum(-1) / N
-
-    # dissimilarity of latents
-    s_sim = ((s[None,:,:] - s[:,None,:])**2).sum(-1) / s_size
-
-    # only give large loss of (dis)similarities are different (either way)
-    x = s_sim-spec_sim
-    sim_loss = torch.sigmoid(slope*x-0.5*wid)+torch.sigmoid(-slope*x-0.5*wid)
-    diag_mask = torch.diag(torch.ones(batch_size,device=device,dtype=bool))
-    sim_loss[diag_mask] = 0
-
-    if individual:
-        return s_sim,spec_sim,sim_loss
-    # total loss: sum over N^2 terms,
-    # needs to have amplitude of N terms to compare to fidelity loss
-    return amp*sim_loss.sum() / batch_size
-
-def restframe_weight(model,instrument,mu=[5000,5000],
-                     sigma=[1000,1000],amp=[20,20]):
-    if type(instrument).__name__ == "SDSS": i=0
-    if type(instrument).__name__ == "BOSS": i=1
-    x = model.decoder.wave_rest
-    return amp[i]*torch.exp(-(0.5*(x-mu[i])/sigma[i])**2)
-
-def similarity_restframe(instrument, model, s=None, slope=1.0,
-                         individual=False, wid=5, bound=[4000,7000]):
-    _, s_size = s.shape
-    device = s.device
-
-    spec = model.decode(s)
-    wave = model.decoder.wave_rest
-    mask = (wave>bound[0])*(wave<bound[1])
-    spec /= spec[:,mask].median(dim=1)[0][:,None]
-    batch_size, spec_size = spec.shape
-    # pairwise dissimilarity of spectra
-    S = (spec[None,:,:] - spec[:,None,:])**2
-    # dissimilarity of spectra
-    # of order unity, larger for spectrum pairs with more comparable bins
-    W = restframe_weight(model,instrument)
-    spec_sim = (W * S).sum(-1) / spec_size
-    # dissimilarity of latents
-    s_sim = ((s[None,:,:] - s[:,None,:])**2).sum(-1) / s_size
-
-    # only give large loss of (dis)similarities are different (either way)
-    x = s_sim-spec_sim
-    sim_loss = torch.sigmoid(slope*x-wid/2)+torch.sigmoid(-slope*x-wid/2)
-    diag_mask = torch.diag(torch.ones(batch_size,device=device,dtype=bool))
-    sim_loss[diag_mask] = 0
-
-    if individual:
-        return s_sim,spec_sim,sim_loss
-
-    # total loss: sum over N^2 terms,
-    # needs to have amplitude of N terms to compare to fidelity loss
-    return sim_loss.sum() / batch_size
-
-def _losses(model,
-            instrument,
-            batch,
-            similarity=True,
-            slope=0,
-            skip=False
-           ):
-
-    spec, w, z = batch
-
-    # need the latents later on if similarity=True
-    s = model.encode(spec)
-    if skip: return 0,0,s
-    loss = model.loss(spec, w, instrument, z=z, s=s)
-
-    if similarity:
-        sim_loss = similarity_restframe(instrument, model, s, slope=slope)
-    else: sim_loss = 0
-
-    return loss, sim_loss, s
-
-def get_losses(model,
-               instrument,
-               batch,
-               aug_fct=None,
-               similarity=True,
-               consistency=True,
-               slope=0
-               ):
-
-    loss, sim_loss, s = _losses(model, instrument, batch, similarity=similarity, slope=slope)
-
-    if aug_fct is not None:
-        batch_copy = aug_fct(batch)
-        loss_, sim_loss_, s_ = _losses(model, instrument, batch_copy, similarity=similarity, slope=slope,skip=True)
-    else:
-        loss_ = sim_loss_ = 0
-
-    if consistency and aug_fct is not None:
-        cons_loss = consistency_loss(s, s_)
-    else:
-        cons_loss = 0
-
-    return loss, sim_loss, loss_, sim_loss_, cons_loss
-
 
 def checkpoint(accelerator, args, optimizer, scheduler, n_encoder, outfile, losses):
     unwrapped = [accelerator.unwrap_model(args_i).state_dict() for args_i in args]
@@ -231,6 +101,7 @@ def train(models,
           aug_fcts=None,
           similarity=True,
           consistency=True,
+          loss_configs=None,
           ):
 
     n_encoder = len(models)
@@ -251,9 +122,15 @@ def train(models,
     trainloaders = [accelerator.prepare(loader) for loader in trainloaders]
     validloaders = [accelerator.prepare(loader) for loader in validloaders]
     optimizer = accelerator.prepare(optimizer)
+    # per-instrument hyperparameters of the similarity and consistency losses
+    CONFIGS = {
+        "SDSS": LossConfig(consistency_tol=0.1, restframe_mu=5000, restframe_sigma=1000, similarity_data_amp=20),
+        "BOSS": LossConfig(consistency_tol=0.1, restframe_mu=5000, restframe_sigma=1000, similarity_data_amp=20),
+    }
+    loss_configs = [CONFIGS[instrument.__class__.__name__] for instrument in instruments]
 
     # define losses to track
-    n_loss = 5
+    n_loss = 3
     epoch = 0
     if losses is None:
         detailed_loss = np.zeros((2, n_encoder, n_epoch, n_loss))
@@ -313,6 +190,7 @@ def train(models,
                     similarity=similarity,
                     consistency=consistency,
                     slope=slope,
+                    loss_config=loss_configs[which],
                 )
                 # sum up all losses
                 loss = functools.reduce(lambda a, b: a+b , losses)
@@ -350,6 +228,7 @@ def train(models,
                         similarity=similarity,
                         consistency=consistency,
                         slope=slope,
+                        loss_configs=loss_configs,
                     )
                     # logging: validation
                     detailed_loss[1][which][epoch_] += tuple( l.item() if hasattr(l, 'item') else 0 for l in losses )
@@ -457,8 +336,13 @@ if __name__ == "__main__":
             print (f"\nLoading file {args.outfile}")
         model, losses = load_model(args.outfile, models, instruments)
 
+    # hyperparameters of the similarity and consistency losses, per instrument;
+    # override entries here to tune training, e.g.
+    # loss_configs["SDSS"] = LossConfig(restframe_mu=6000)
+    loss_configs = dict(DEFAULT_LOSS_CONFIGS)
+
     train(models, instruments, trainloaders, validloaders, n_epoch=n_epoch,
-          n_batch=args.batch_number, lr=args.rate, aug_fcts=aug_fcts, similarity=args.similarity, consistency=args.consistency, outfile=args.outfile, losses=losses, verbose=args.verbose)
+          n_batch=args.batch_number, lr=args.rate, aug_fcts=aug_fcts, similarity=args.similarity, consistency=args.consistency, outfile=args.outfile, losses=losses, verbose=args.verbose, loss_configs=loss_configs)
 
     if args.verbose:
         print("--- %s seconds ---" % (time.time()-init_t))
