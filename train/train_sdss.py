@@ -10,6 +10,7 @@ from torch import nn, optim
 
 from spender import SpectrumAutoencoder, SpeculatorActivation
 from spender.data.sdss import SDSS
+from spender.util import LossTracker
 
 
 def load_model(filename, model, instrument):
@@ -28,11 +29,12 @@ def load_model(filename, model, instrument):
         model_struct['model']['encoder.instrument.wave_obs']= instrument.wave_obs
         model_struct['model']['encoder.instrument.skyline_mask']= instrument.skyline_mask
         model.load_state_dict(model_struct['model'], strict=False)
-    losses = model_struct['losses']
-    return model, losses
+    tracker = LossTracker()
+    tracker.load_state_dict(model_struct['losses'])
+    return model, tracker
 
 
-def train(model, instrument, trainloader, validloader, n_epoch=200, n_batch=None, outfile=None, losses=None, verbose=False, lr=3e-4):
+def train(model, instrument, trainloader, validloader, n_epoch=200, n_batch=None, outfile=None, tracker=None, verbose=False, lr=3e-4):
 
     optimizer = optim.Adam(model.parameters(), lr=lr)
     scheduler = optim.lr_scheduler.OneCycleLR(optimizer, lr, total_steps=n_epoch)
@@ -43,57 +45,47 @@ def train(model, instrument, trainloader, validloader, n_epoch=200, n_batch=None
     if outfile is None:
         outfile = "checkpoint.pt"
 
-    epoch = 0
-    if losses is None:
-        losses = []
-    else:
-        try:
-            epoch = len(losses)
-            n_epoch += epoch
-            if verbose:
-                train_loss, valid_loss = losses[-1]
-                print(f'====> Epoch: {epoch-1} TRAINING Loss: {train_loss:.3e}  VALIDATION Loss: {valid_loss:.3e}')
-                if instrument.lsf is not None:
-                    print (f'LSF: {instrument.lsf.weight.data}')
-        except: # OK if losses are empty
-            pass
+    if tracker is None:
+        tracker = LossTracker()
+    epoch = tracker.epoch
+    n_epoch += epoch
+    if verbose and epoch > 0:
+        train_loss = tracker.history["train"]["fidelity"][-1]
+        valid_loss = tracker.history["valid"]["fidelity"][-1]
+        print(f'====> Epoch: {epoch-1} TRAINING Loss: {train_loss:.3e}  VALIDATION Loss: {valid_loss:.3e}')
+        if instrument.lsf is not None:
+            print (f'LSF: {instrument.lsf.weight.data}')
 
     for epoch_ in range(epoch, n_epoch):
         model.train()
-        train_loss = 0.
-        n_sample = 0
         for k, batch in enumerate(trainloader):
             batch_size = len(batch[0])
             spec, w, z = batch
             loss = model.loss(spec, w, instrument=instrument, z=z)
             accelerator.backward(loss)
-            train_loss += loss.item()
-            n_sample += batch_size
             optimizer.step()
             optimizer.zero_grad()
+            tracker.update("train", {"fidelity": loss}, batch_size)
 
             # stop after n_batch
             if n_batch is not None and k == n_batch - 1:
                 break
-        train_loss /= n_sample
 
         with torch.no_grad():
             model.eval()
-            valid_loss = 0.
-            n_sample = 0
             for k, batch in enumerate(validloader):
                 batch_size = len(batch[0])
                 spec, w, z = batch
                 loss = model.loss(spec, w, instrument=instrument, z=z)
-                valid_loss += loss.item()
-                n_sample += batch_size
+                tracker.update("valid", {"fidelity": loss}, batch_size)
                 # stop after n_batch
                 if n_batch is not None and k == n_batch - 1:
                     break
-            valid_loss /= n_sample
 
         scheduler.step()
-        losses.append((train_loss, valid_loss))
+        tracker.end_epoch()
+        train_loss = tracker.history["train"]["fidelity"][-1]
+        valid_loss = tracker.history["valid"]["fidelity"][-1]
 
         if verbose:
             print(f'====> Epoch: {epoch_} TRAINING Loss: {train_loss:.3e}  VALIDATION Loss: {valid_loss:.3e}')
@@ -105,7 +97,7 @@ def train(model, instrument, trainloader, validloader, n_epoch=200, n_batch=None
             unwrapped_model = accelerator.unwrap_model(model)
             accelerator.save({
                 "model": unwrapped_model.state_dict(),
-                "losses": losses,
+                "losses": tracker.state_dict(),
             }, outfile)
 
 
@@ -161,10 +153,10 @@ if __name__ == "__main__":
     # check if outfile already exists, continue only of -c is set
     if os.path.isfile(args.outfile) and not args.clobber:
         raise SystemExit("\nOutfile exists! Set option -C to continue training.")
-    losses = None
+    tracker = None
     if os.path.isfile(args.outfile):
         if args.verbose:
             print (f"\nLoading file {args.outfile}")
-        model, losses = load_model(args.outfile, model, instrument)
+        model, tracker = load_model(args.outfile, model, instrument)
 
-    train(model, instrument, trainloader, validloader, n_epoch=args.epochs, n_batch=args.batch_number, outfile=args.outfile, losses=losses, lr=args.rate, verbose=args.verbose)
+    train(model, instrument, trainloader, validloader, n_epoch=args.epochs, n_batch=args.batch_number, outfile=args.outfile, tracker=tracker, lr=args.rate, verbose=args.verbose)

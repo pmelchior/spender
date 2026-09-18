@@ -1,6 +1,7 @@
 import io
 import pickle
 import random
+from collections import defaultdict
 from itertools import chain
 
 import GPUtil
@@ -99,6 +100,99 @@ def mem_report():
             )
         )
     return
+
+
+class LossTracker:
+    """Tracks an arbitrary number of named losses, split by train/validation
+
+    Training scripts call :meth:`update` once per batch with a dict of that batch's
+    losses (any set of names, which may differ between calls) and a normalization
+    weight (typically the batch size); :meth:`end_epoch` folds those into a running,
+    weighted per-epoch mean for each name. A name that is skipped in a given epoch
+    (e.g. a loss term that is turned off for a stretch of training) is recorded as 0
+    for that epoch so all histories stay aligned by epoch index.
+
+    :meth:`state_dict` / :meth:`load_state_dict` let the tracker be saved and resumed
+    alongside the model weights in the same checkpoint file.
+    """
+
+    def __init__(self):
+        self.history = {"train": defaultdict(list), "valid": defaultdict(list)}
+        self._epoch = 0
+        self._reset_running()
+
+    def _reset_running(self):
+        self._sums = {"train": defaultdict(float), "valid": defaultdict(float)}
+        self._counts = {"train": defaultdict(float), "valid": defaultdict(float)}
+
+    def update(self, split, losses, weight=1):
+        """Accumulate one batch's losses
+
+        Parameters
+        ----------
+        split: "train" or "valid"
+        losses: dict
+            Mapping of loss name to value (`torch.Tensor` or float) for this batch
+        weight: float
+            Normalization weight for this batch, typically the batch size
+        """
+        sums, counts = self._sums[split], self._counts[split]
+        for name, value in losses.items():
+            sums[name] += (value.item() if hasattr(value, "item") else value) * weight
+            counts[name] += weight
+
+    def end_epoch(self):
+        """Fold the accumulated batches into this epoch's per-name means"""
+        for split in ("train", "valid"):
+            names = set(self.history[split]) | set(self._sums[split])
+            for name in names:
+                count = self._counts[split][name]
+                mean = self._sums[split][name] / count if count else 0.0
+                self.history[split][name].append(mean)
+        self._epoch += 1
+        self._reset_running()
+
+    @property
+    def epoch(self):
+        """Number of completed epochs"""
+        return self._epoch
+
+    def state_dict(self):
+        return {
+            "epoch": self._epoch,
+            "train": dict(self.history["train"]),
+            "valid": dict(self.history["valid"]),
+        }
+
+    def load_state_dict(self, state):
+        if not isinstance(state, dict) or "train" not in state or "valid" not in state:
+            # backwards compat: pre-LossTracker checkpoints stored losses as a
+            # plain array; that history can't be recovered, so start tracking fresh
+            return
+        self.history = {split: defaultdict(list, state[split]) for split in ("train", "valid")}
+        self._epoch = state.get("epoch", 0)
+        self._reset_running()
+
+    def plot(self, names=None, log=True, ax=None):
+        """Plot train (solid) and validation (dashed) loss curves by name"""
+        import matplotlib.pyplot as plt
+
+        if ax is None:
+            _, ax = plt.subplots()
+        if names is None:
+            names = sorted(set(self.history["train"]) | set(self.history["valid"]))
+        for name in names:
+            if name in self.history["train"]:
+                line, = ax.plot(self.history["train"][name], label=f"{name} (train)")
+            if name in self.history["valid"]:
+                color = line.get_color() if name in self.history["train"] else None
+                ax.plot(self.history["valid"][name], "--", color=color, label=f"{name} (valid)")
+        if log:
+            ax.set_yscale("log")
+        ax.set_xlabel("epoch")
+        ax.set_ylabel("loss")
+        ax.legend()
+        return ax
 
 
 def resample_to_restframe(wave_obs, wave_rest, y, w, z):

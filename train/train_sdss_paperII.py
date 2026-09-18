@@ -10,7 +10,7 @@ from accelerate import Accelerator
 from spender import SpectrumAutoencoder
 from spender.data.sdss import SDSS
 from spender.loss import LossConfig, get_losses
-from spender.util import mem_report
+from spender.util import mem_report, LossTracker
 
 # allows one to run fp16_train.py from home directory
 import sys;sys.path.insert(1, './')
@@ -63,12 +63,12 @@ DEFAULT_LOSS_CONFIGS = {
     "BOSS": LossConfig(consistency_tol=0.1, restframe_mu=5000, restframe_sigma=1000, similarity_data_amp=20),
 }
 
-def checkpoint(accelerator, args, optimizer, scheduler, n_encoder, outfile, losses):
+def checkpoint(accelerator, args, optimizer, scheduler, n_encoder, outfile, tracker):
     unwrapped = [accelerator.unwrap_model(args_i).state_dict() for args_i in args]
 
     accelerator.save({
         "model": unwrapped,
-        "losses": losses,
+        "losses": tracker.state_dict(),
     }, outfile)
     return
 
@@ -89,8 +89,9 @@ def load_model(filename, models, instruments):
             model_struct['model'][i]['encoder.instrument.skyline_mask']= instruments[i].skyline_mask
             model.load_state_dict(model_struct[i]['model'], strict=False)
 
-    losses = model_struct['losses']
-    return models, losses
+    tracker = LossTracker()
+    tracker.load_state_dict(model_struct['losses'])
+    return models, tracker
 
 
 def train(models,
@@ -99,7 +100,7 @@ def train(models,
           validloaders,
           n_epoch=200,
           outfile=None,
-          losses=None,
+          tracker=None,
           verbose=False,
           lr=1e-4,
           n_batch=50,
@@ -130,25 +131,17 @@ def train(models,
     if loss_configs is None:
         loss_configs = [DEFAULT_LOSS_CONFIGS[instrument.__class__.__name__] for instrument in instruments]
 
-    # define losses to track
-    n_loss = 3
-    epoch = 0
-    if losses is None:
-        detailed_loss = np.zeros((2, n_encoder, n_epoch, n_loss))
-    else:
-        try:
-            epoch = len(losses[0][0])
-            n_epoch += epoch
-            detailed_loss = np.zeros((2, n_encoder, n_epoch, n_loss))
-            detailed_loss[:, :, :epoch, :] = losses
-            if verbose:
-                losses = tuple(detailed_loss[0, :, epoch-1, :])
-                vlosses = tuple(detailed_loss[1, :, epoch-1, :])
-                print(f'====> Epoch: {epoch-1}')
-                print('TRAINING Losses:', losses)
-                print('VALIDATION Losses:', vlosses)
-        except: # OK if losses are empty
-            pass
+    # each encoder's losses are tracked under its own name prefix, e.g. "SDSS.fidelity"
+    prefixes = [instrument.__class__.__name__ for instrument in instruments]
+
+    if tracker is None:
+        tracker = LossTracker()
+    epoch = tracker.epoch
+    n_epoch += epoch
+    if verbose and epoch > 0:
+        print(f'====> Epoch: {epoch-1}')
+        print('TRAINING Losses:', {k: v[-1] for k, v in tracker.history["train"].items()})
+        print('VALIDATION Losses:', {k: v[-1] for k, v in tracker.history["valid"].items()})
 
     if outfile is None:
         outfile = "checkpoint.pt"
@@ -182,10 +175,9 @@ def train(models,
             models[which].train()
             instruments[which].train()
 
-            n_sample = 0
             for k, batch in enumerate(trainloaders[which]):
                 batch_size = len(batch[0])
-                losses = get_losses(
+                fidelity_loss, sim_loss, cons_loss = get_losses(
                     models[which],
                     instruments[which],
                     batch,
@@ -195,7 +187,6 @@ def train(models,
                     loss_config=loss_configs[which],
                 )
                 # weighted combination of the individual losses for backprop
-                fidelity_loss, sim_loss, cons_loss = losses
                 config = loss_configs[which]
                 loss = fidelity_loss + config.similarity_amp * sim_loss + config.consistency_amp * cons_loss
                 accelerator.backward(loss)
@@ -206,13 +197,16 @@ def train(models,
                 optimizer.zero_grad()
 
                 # logging: training
-                detailed_loss[0][which][epoch_] += tuple( l.item() if hasattr(l, 'item') else 0 for l in losses )
-                n_sample += batch_size
+                prefix = prefixes[which]
+                tracker.update("train", {
+                    f"{prefix}.fidelity": fidelity_loss,
+                    f"{prefix}.similarity": sim_loss,
+                    f"{prefix}.consistency": cons_loss,
+                }, batch_size)
 
                 # stop after n_batch
                 if n_batch is not None and k == n_batch - 1:
                     break
-            detailed_loss[0][which][epoch_] /= n_sample
 
         scheduler.step()
 
@@ -221,10 +215,9 @@ def train(models,
                 models[which].eval()
                 instruments[which].eval()
 
-                n_sample = 0
                 for k, batch in enumerate(validloaders[which]):
                     batch_size = len(batch[0])
-                    losses = get_losses(
+                    fidelity_loss, sim_loss, cons_loss = get_losses(
                         models[which],
                         instruments[which],
                         batch,
@@ -234,26 +227,28 @@ def train(models,
                         loss_config=loss_configs[which],
                     )
                     # logging: validation
-                    detailed_loss[1][which][epoch_] += tuple( l.item() if hasattr(l, 'item') else 0 for l in losses )
-                    n_sample += batch_size
+                    prefix = prefixes[which]
+                    tracker.update("valid", {
+                        f"{prefix}.fidelity": fidelity_loss,
+                        f"{prefix}.similarity": sim_loss,
+                        f"{prefix}.consistency": cons_loss,
+                    }, batch_size)
 
                     # stop after n_batch
                     if n_batch is not None and k == n_batch - 1:
                         break
 
-                detailed_loss[1][which][epoch_] /= n_sample
+        tracker.end_epoch()
 
         if verbose:
             mem_report()
-            losses = tuple(detailed_loss[0, :, epoch_, :])
-            vlosses = tuple(detailed_loss[1, :, epoch_, :])
-            print('====> Epoch: %i'%(epoch))
-            print('TRAINING Losses:', losses)
-            print('VALIDATION Losses:', vlosses)
+            print('====> Epoch: %i'%(epoch_))
+            print('TRAINING Losses:', {k: v[-1] for k, v in tracker.history["train"].items()})
+            print('VALIDATION Losses:', {k: v[-1] for k, v in tracker.history["valid"].items()})
 
         if epoch_ % 5 == 0 or epoch_ == n_epoch - 1:
             args = models
-            checkpoint(accelerator, args, optimizer, scheduler, n_encoder, outfile, detailed_loss)
+            checkpoint(accelerator, args, optimizer, scheduler, n_encoder, outfile, tracker)
 
 
 if __name__ == "__main__":
@@ -333,18 +328,18 @@ if __name__ == "__main__":
     # check if outfile already exists, continue only of -c is set
     if os.path.isfile(args.outfile) and not args.clobber:
         raise SystemExit("\nOutfile exists! Set option -C to continue training.")
-    losses = None
+    tracker = None
     if os.path.isfile(args.outfile):
         if args.verbose:
             print (f"\nLoading file {args.outfile}")
-        model, losses = load_model(args.outfile, models, instruments)
+        models, tracker = load_model(args.outfile, models, instruments)
 
     # hyperparameters of the similarity and consistency losses, per instrument;
     # override entries here to tune training, e.g. loss_configs[0].restframe_mu = 6000
     loss_configs = [DEFAULT_LOSS_CONFIGS[instrument.__class__.__name__] for instrument in instruments]
 
     train(models, instruments, trainloaders, validloaders, n_epoch=n_epoch,
-          n_batch=args.batch_number, lr=args.rate, aug_fcts=aug_fcts, similarity=args.similarity, consistency=args.consistency, outfile=args.outfile, losses=losses, verbose=args.verbose, loss_configs=loss_configs)
+          n_batch=args.batch_number, lr=args.rate, aug_fcts=aug_fcts, similarity=args.similarity, consistency=args.consistency, outfile=args.outfile, tracker=tracker, verbose=args.verbose, loss_configs=loss_configs)
 
     if args.verbose:
         print("--- %s seconds ---" % (time.time()-init_t))
