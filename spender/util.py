@@ -9,7 +9,43 @@ import humanize
 import psutil
 import torch
 from torch.utils.data import IterableDataset
-from torchinterp1d import interp1d
+
+
+def interp1d(x, y, xnew):
+    """Linear interpolation of `y(x)` at `xnew`
+
+    Beyond the range of `x`, the function is linearly extrapolated from the first or
+    last interval. Replaces `torchinterp1d.interp1d` with the same behavior, but
+    without a custom backward pass so that autograd computes the gradients.
+
+    Parameters
+    ----------
+    x: `torch.tensor`, shape (L, ) or (N, L)
+        Sorted sample coordinates
+    y: `torch.tensor`, shape (L, ) or (N, L)
+        Sample values
+    xnew: `torch.tensor`, shape (M, ) or (N, M)
+        Coordinates to interpolate at
+
+    Returns
+    -------
+    ynew: `torch.tensor`, shape (N, M)
+        Interpolated values, with the dtype of `y`
+    """
+    x, y, xnew = torch.atleast_2d(x), torch.atleast_2d(y), torch.atleast_2d(xnew)
+    N = max(x.shape[0], y.shape[0], xnew.shape[0])
+    x, y, xnew = x.expand(N, -1), y.expand(N, -1), xnew.expand(N, -1)
+
+    # index of the left neighbor, clamped to the first and last interval. Search in
+    # the common dtype: casting xnew to lower precision can move it across a node
+    dtype = torch.promote_types(x.dtype, xnew.dtype)
+    ind = torch.searchsorted(x.to(dtype).contiguous(), xnew.to(dtype).contiguous()) - 1
+    ind = ind.clamp(0, x.shape[1] - 2)
+
+    eps = torch.finfo(y.dtype).eps
+    slopes = (y[:, 1:] - y[:, :-1]) / (eps + x[:, 1:] - x[:, :-1])
+    ynew = y.gather(1, ind) + slopes.gather(1, ind) * (xnew - x.gather(1, ind))
+    return ynew.to(y.dtype)
 
 
 ############ Functions for creating batched files ###############
