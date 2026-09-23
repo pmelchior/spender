@@ -104,7 +104,7 @@ def train(model, instrument, trainloader, validloader, n_epoch=200, n_batch=None
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("dir", help="data file directory")
+    parser.add_argument("dir", help="dataset directory or HuggingFace Hub repository")
     parser.add_argument("outfile", help="output file name")
     parser.add_argument("-n", "--latents", help="latent dimensionality", type=int, default=2)
     parser.add_argument("-b", "--batch_size", help="batch size", type=int, default=1024)
@@ -135,8 +135,8 @@ if __name__ == "__main__":
     wave_rest = torch.linspace(lmbda_min, lmbda_max, bins, dtype=torch.float32)
 
     # data loaders
-    trainloader = SDSS.get_data_loader(args.dir, tag="variable", which="train", batch_size=args.batch_size, shuffle=True)
-    validloader = SDSS.get_data_loader(args.dir, tag="variable", which="valid", batch_size=args.batch_size)
+    trainloader = SDSS.get_data_loader(args.dir, which="train", batch_size=args.batch_size, shuffle=True)
+    validloader = SDSS.get_data_loader(args.dir, which="valid", batch_size=args.batch_size)
 
     if args.verbose:
         print ("Observed frame:\t{:.0f} .. {:.0f} A ({} bins)".format(instrument.wave_obs.min(), instrument.wave_obs.max(), len(instrument.wave_obs)))

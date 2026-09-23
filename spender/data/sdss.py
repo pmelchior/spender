@@ -1,16 +1,15 @@
 import glob
 import os
 import urllib.request
-from functools import partial
 
 import astropy.io.fits as fits
 import astropy.table as aTable
 import numpy as np
 import torch
 import pickle
-from torch.utils.data import DataLoader
 from ..instrument import Instrument, get_skyline_mask
-from ..util import BatchedFilesDataset, load_batch, interp1d
+from ..util import load_batch, interp1d
+from .dataset import get_data_loader, get_features, write_dataset
 
 
 class SDSS(Instrument):
@@ -36,47 +35,90 @@ class SDSS(Instrument):
         """
         super().__init__(SDSS._wave_obs, lsf=lsf, calibration=calibration)
 
+    _id_columns = ["plate", "mjd", "fiberid"]
+
     @classmethod
-    def get_data_loader(
-        cls,
-        dir,
-        which=None,
-        tag=None,
-        batch_size=1024,
-        shuffle=False,
-        shuffle_instance=False,
-    ):
+    def get_data_loader(cls, path, which="train", batch_size=1024, shuffle=False, **kwargs):
         """Get a dataloader for batches of spectra
+
+        Parameters
+        ----------
+        path: string
+            Local directory or HuggingFace Hub repository of the dataset,
+            see :meth:`save_dataset`
+        which: ['train', 'valid', 'test']
+            Which split of the spectra to return
+        batch_size: int
+            Number of spectra in each batch
+        shuffle: bool
+            Whether to shuffle the spectra
+        kwargs: dict
+            Additional arguments for :func:`spender.data.dataset.get_data_loader`
+
+        Returns
+        -------
+        :class:`torch.utils.data.DataLoader`, yields tuples of (spec, w, z)
+        """
+        return get_data_loader(path, which=which, batch_size=batch_size, shuffle=shuffle, **kwargs)
+
+    @classmethod
+    def save_dataset(cls, dir, path, fields, batch_size=1024, **kwargs):
+        """Download, prepare, and save spectra as a dataset
 
         Parameters
         ----------
         dir: string
             Root directory for data storage
-        which: ['train', 'valid', 'test'] or None
-            Which subset of the spectra to return. If `None`, returns all of them.
-        tag: string
-            Name to specify which batch files to load
+        path: string
+            Root directory of the dataset
+        fields: list of (plate, mjd, fiberid, [z, z_err])
+            List of object qualifiers from query()
         batch_size: int
-            Number of spectra in each batch
-        shuffle: bool
-            Whether to shuffle the order of the batch files
-        shuffle_instance: bool
-            Whether to shuffle spectra within each batch
+            Number of spectra to prepare before writing them
+        kwargs: dict
+            Additional arguments for :func:`spender.data.dataset.write_dataset`
 
         Returns
         -------
-        :class:`torch.utils.data.DataLoader`
+        dict with the number of spectra in each split
         """
-        files = cls.list_batches(dir, which=which, tag=tag)
-        if which in ["train", "valid"]:
-            subset = slice(0, 3)
-        else:
-            subset = None
-        load_fct = partial(load_batch, subset=subset)
-        data = BatchedFilesDataset(
-            files, load_fct, shuffle=shuffle, shuffle_instance=shuffle_instance
-        )
-        return DataLoader(data, batch_size=batch_size)
+        def batches():
+            for start in range(0, len(fields), batch_size):
+                fields_ = fields[start : start + batch_size]
+                spec, w, z, norm, zerr = cls.make_batch(dir, fields_)
+                ids = np.array([[int(f[i]) for i in range(3)] for f in fields_])
+                yield dict(spec=spec, w=w, z=z, zerr=zerr, norm=norm, plate=ids[:, 0], mjd=ids[:, 1], fiberid=ids[:, 2])
+
+        features = get_features(len(cls._wave_obs), cls._id_columns)
+        return write_dataset(path, batches(), features, cls._id_columns, **kwargs)
+
+    @classmethod
+    def convert_batches(cls, dir, path, tag="variable", **kwargs):
+        """Convert pickled batch files into a dataset
+
+        Parameters
+        ----------
+        dir: string
+            Root directory for data storage
+        path: string
+            Root directory of the dataset
+        tag: string
+            Name to specify which batch files to load
+        kwargs: dict
+            Additional arguments for :func:`spender.data.dataset.write_dataset`
+
+        Returns
+        -------
+        dict with the number of spectra in each split
+        """
+        def batches():
+            for filename in sorted(cls.list_batches(dir, tag=tag)):
+                spec, w, z, ids, norm, zerr = load_batch(filename)
+                ids = np.asarray(ids)
+                yield dict(spec=spec, w=w, z=z, zerr=zerr, norm=norm, plate=ids[:, 0], mjd=ids[:, 1], fiberid=ids[:, 2])
+
+        features = get_features(len(cls._wave_obs), cls._id_columns)
+        return write_dataset(path, batches(), features, cls._id_columns, **kwargs)
 
     @classmethod
     def list_batches(cls, dir, which=None, tag=None):
