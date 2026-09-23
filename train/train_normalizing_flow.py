@@ -1,84 +1,153 @@
 #!/usr/bin/env python
-# coding: utf-8
-import os
+
+import argparse
+
 import numpy as np
 import torch
-from torch.utils.data import DataLoader
-from functools import partial
 
-from spender.util import BatchedFilesDataset, load_batch
-from spender.flow import NeuralDensityEstimator
+from spender import NeuralDensityEstimator, load_flow_model, load_model
+from spender.data.sdss import SDSS
+from spender.util import LossTracker
 
-def get_data_loader(dir, which=None, batch_size=10000, shuffle=False, shuffle_instance=True,tag=None):
-    files = ["%s/%s"%(dir,item) for item in os.listdir(dir)]
-    if tag is not None:files=[item for item in files if tag in item]
-    NBATCH = len(files)
-    train_batches = files[:int(0.85*NBATCH)]
-    valid_batches = files[int(0.85*NBATCH):]
 
-    if which == "valid":files = valid_batches
-    elif which == "train": files = train_batches
+def encode(model, loader, device):
+    """Encode all spectra of a data loader into latents
 
-    load_fct = partial(load_batch)
-    data = BatchedFilesDataset(files, load_fct, shuffle=shuffle, shuffle_instance=shuffle_instance)
-    return DataLoader(data, batch_size=batch_size)
+    Parameters
+    ----------
+    model: :class:`spender.SpectrumAutoencoder`
+        Trained spender model
+    loader: :class:`torch.utils.data.DataLoader`
+        Loader of the spectra, see :meth:`spender.data.sdss.SDSS.get_data_loader`
+    device: `torch.Device`
+        Device to run the encoder on
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    Returns
+    -------
+    s: `torch.tensor`, shape (N, n_latent)
+        Latents of all spectra
+    """
+    model.eval()
+    s = []
+    with torch.no_grad():
+        for spec, w, z in loader:
+            s.append(model.encode(spec.to(device)))
+    return torch.cat(s)
 
-s_dir = "runtime"
-tag = "zfree_c"
-model_file = "flow.pkl"
 
-data_loader = get_data_loader(s_dir,which="train",tag=tag)
-valid_data_loader = get_data_loader(s_dir,which="valid",tag=tag)
+def train(nde, s, s_valid, n_epoch=100, batch_size=10000, lr=1e-2, outfile=None, tracker=None, verbose=False):
+    """Train the normalizing flow on latents
 
-for k,batch in enumerate(data_loader):
-    sample = batch[0]
-    break
+    Parameters
+    ----------
+    nde: :class:`spender.NeuralDensityEstimator`
+        Flow model
+    s: `torch.tensor`, shape (N, n_latent)
+        Latents for training
+    s_valid: `torch.tensor`, shape (M, n_latent)
+        Latents for validation
+    n_epoch: int
+        Number of epochs
+    batch_size: int
+        Number of latents in each batch
+    lr: float
+        Maximum learning rate
+    outfile: string
+        Path to save the flow model to
+    tracker: :class:`spender.util.LossTracker`
+        Tracker for the training and validation losses
+    verbose: bool
+        Whether to print the losses of every epoch
 
-print("sample to infer dimensionality",
-      sample.shape,sample.device)
-print("device:", device)
+    Returns
+    -------
+    None
+    """
+    if outfile is None:
+        outfile = "flow.pt"
+    if tracker is None:
+        tracker = LossTracker()
 
-n_latent = 6
+    optimizer = torch.optim.Adam(nde.parameters(), lr=lr)
+    n_batch = max(1, int(np.ceil(len(s) / batch_size)))
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, lr, steps_per_epoch=n_batch, epochs=n_epoch)
 
-if os.path.isfile(model_file):
-    print("loading from ",model_file)
-    NDE_theta = torch.load(model_file,map_location=device)
-else:
-    NDE_theta = NeuralDensityEstimator(normalize=False,initial_pos={'bounds': [[0, 0]] * n_latent, 'std': [0.05] * n_latent}, method='maf')
-    sample = torch.Tensor(sample).to(device)
-    NDE_theta.build(sample)
+    for epoch in range(n_epoch):
+        nde.train()
+        # batch composition changes in every epoch
+        perm = torch.randperm(len(s), device=s.device)
+        for k in range(n_batch):
+            batch = s[perm[k * batch_size : (k + 1) * batch_size]]
+            loss = -nde.log_prob(batch).mean()
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            scheduler.step()
+            tracker.update("train", {"log_prob": loss}, len(batch))
 
-n_epoch = 100
-n_steps = 20
+        with torch.no_grad():
+            nde.eval()
+            for k in range(0, len(s_valid), batch_size):
+                batch = s_valid[k : k + batch_size]
+                loss = -nde.log_prob(batch).mean()
+                tracker.update("valid", {"log_prob": loss}, len(batch))
 
-scheduler = torch.optim.lr_scheduler.OneCycleLR(NDE_theta.optimizer,max_lr=1e-2,steps_per_epoch=n_steps,epochs=n_epoch)
-for i, epoch in enumerate(range(n_epoch)):
-    print('    Epoch {0}'.format(epoch))
-    print('    lr:', NDE_theta.optimizer.param_groups[0]['lr'])
-    
-    train_loss = []
-    for k,batch in enumerate(data_loader):
-        NDE_theta.optimizer.zero_grad()
-        latent = batch[0]
-        loss = -NDE_theta.net.log_prob(latent).mean()
-        loss.backward()
-        NDE_theta.optimizer.step()
-        train_loss.append(loss.item())
-        if k>=n_steps:continue
-    train_loss = np.mean(train_loss)
-    NDE_theta.train_loss_history.append(train_loss)
+        tracker.end_epoch()
+        if verbose:
+            train_loss = tracker.history["train"]["log_prob"][-1]
+            valid_loss = tracker.history["valid"]["log_prob"][-1]
+            print(f"====> Epoch: {epoch} TRAINING Loss: {train_loss:.3f}  VALIDATION Loss: {valid_loss:.3f}")
 
-    valid_loss = []
-    for k,batch in enumerate(valid_data_loader):
-        latent = batch[0]
-        loss = -NDE_theta.net.log_prob(latent).mean()
-        valid_loss.append(loss.item())
-    valid_loss = np.mean(valid_loss)
-    NDE_theta.valid_loss_history.append(valid_loss)
-    print(f'Loss = {train_loss:.3f} (train), {valid_loss:.3f} (valid)')
-    scheduler.step()
+        if epoch % 10 == 0 or epoch == n_epoch - 1:
+            torch.save(nde.state_dict(), outfile)
 
-    if epoch%10 ==0 or epoch==n_epoch-1:
-        NDE_theta.save_model(model_file)
+
+if __name__ == "__main__":
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("dir", help="dataset directory or HuggingFace Hub repository")
+    parser.add_argument("model", help="file name of the trained spender model")
+    parser.add_argument("outfile", help="output file name of the flow model")
+    parser.add_argument("-b", "--batch_size", help="batch size for the flow", type=int, default=10000)
+    parser.add_argument("-B", "--encode_batch_size", help="batch size for the encoder", type=int, default=1024)
+    parser.add_argument("-e", "--epochs", help="number of epochs", type=int, default=100)
+    parser.add_argument("-r", "--rate", help="maximum learning rate", type=float, default=1e-2)
+    parser.add_argument("-C", "--clobber", help="continue training of existing flow model", action="store_true")
+    parser.add_argument("-v", "--verbose", help="verbose printing", action="store_true")
+    args = parser.parse_args()
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # encode all spectra once: the latents are small enough to stay in memory
+    instrument = SDSS()
+    model = load_model(args.model, instrument, map_location=device)
+    model.to(device)
+    s, s_valid = tuple(
+        encode(model, SDSS.get_data_loader(args.dir, which=which, batch_size=args.encode_batch_size), device)
+        for which in ("train", "valid")
+    )
+    n_latent = s.shape[1]
+
+    if args.verbose:
+        print(f"Latents:\t{len(s)} (train), {len(s_valid)} (valid), {n_latent} dimensions")
+        print(f"device:\t\t{device}")
+
+    if args.clobber:
+        nde = load_flow_model(args.outfile, n_latent, map_location=device)
+    else:
+        nde = NeuralDensityEstimator(
+            dim=n_latent,
+            initial_pos={"bounds": [[0, 0]] * n_latent, "std": [0.05] * n_latent},
+        )
+    nde.to(device)
+
+    train(
+        nde,
+        s,
+        s_valid,
+        n_epoch=args.epochs,
+        batch_size=args.batch_size,
+        lr=args.rate,
+        outfile=args.outfile,
+        verbose=args.verbose,
+    )
