@@ -26,13 +26,15 @@ dependencies = [
     "torch",
     "numpy",
     "accelerate",
-    "torchinterp1d",
     "astropy",
     "humanize",
     "psutil",
     "GPUtil",
     "nflows",
     "huggingface_hub",
+    "datasets",
+    "pyarrow",
+    "fsspec",
 ]
 
 [project.urls]

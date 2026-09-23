@@ -226,7 +226,7 @@ def train(model,
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("dir", help="data file directory")
+    parser.add_argument("dir", help="dataset directory or HuggingFace Hub repository")
     parser.add_argument("outfile", help="output file name")
     parser.add_argument("-n", "--latents", help="latent dimensionality", type=int, default=2)
     parser.add_argument("-b", "--batch_size", help="batch size", type=int, default=512)
@@ -258,8 +258,8 @@ if __name__ == "__main__":
         print ("Restframe:\t{:.0f} .. {:.0f} A ({} bins)".format(lmbda_min, lmbda_max, bins))
 
     # data loaders
-    trainloader = instrument.get_data_loader(args.dir, tag="Stars", which="train",  batch_size=args.batch_size, shuffle=True, shuffle_instance=True)
-    validloader = instrument.get_data_loader(args.dir,  tag="Stars", which="valid", batch_size=args.batch_size, shuffle=True, shuffle_instance=True)
+    trainloader = instrument.get_data_loader(args.dir, which="train", batch_size=args.batch_size, shuffle=True)
+    validloader = instrument.get_data_loader(args.dir, which="valid", batch_size=args.batch_size)
 
     # get augmentation function
     if args.augmentation:

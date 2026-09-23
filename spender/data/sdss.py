@@ -1,16 +1,13 @@
-import glob
 import os
 import urllib.request
-from functools import partial
 
 import astropy.io.fits as fits
 import astropy.table as aTable
 import numpy as np
 import torch
-import pickle
-from torch.utils.data import DataLoader
 from ..instrument import Instrument, get_skyline_mask
-from ..util import BatchedFilesDataset, load_batch, interp1d
+from ..util import interp1d
+from .dataset import get_data_loader, get_features, write_dataset
 
 
 class SDSS(Instrument):
@@ -23,6 +20,7 @@ class SDSS(Instrument):
     _wave_obs = 10 ** torch.arange(3.578, 3.97, 0.0001)
     _skyline_mask = get_skyline_mask(_wave_obs)
     _base_url = "https://data.sdss.org/sas/dr16/sdss/spectro/redux/26/spectra/lite/"
+    _id_columns = ["plate", "mjd", "fiberid"]
 
     def __init__(self, lsf=None, calibration=None):
         """Create instrument
@@ -37,142 +35,59 @@ class SDSS(Instrument):
         super().__init__(SDSS._wave_obs, lsf=lsf, calibration=calibration)
 
     @classmethod
-    def get_data_loader(
-        cls,
-        dir,
-        which=None,
-        tag=None,
-        batch_size=1024,
-        shuffle=False,
-        shuffle_instance=False,
-    ):
+    def get_data_loader(cls, path, which="train", batch_size=1024, shuffle=False, **kwargs):
         """Get a dataloader for batches of spectra
 
         Parameters
         ----------
-        dir: string
-            Root directory for data storage
-        which: ['train', 'valid', 'test'] or None
-            Which subset of the spectra to return. If `None`, returns all of them.
-        tag: string
-            Name to specify which batch files to load
+        path: string
+            Local directory or HuggingFace Hub repository of the dataset,
+            see :meth:`save_dataset`
+        which: ['train', 'valid', 'test']
+            Which split of the spectra to return
         batch_size: int
             Number of spectra in each batch
         shuffle: bool
-            Whether to shuffle the order of the batch files
-        shuffle_instance: bool
-            Whether to shuffle spectra within each batch
+            Whether to shuffle the spectra
+        kwargs: dict
+            Additional arguments for :func:`spender.data.dataset.get_data_loader`
 
         Returns
         -------
-        :class:`torch.utils.data.DataLoader`
+        :class:`torch.utils.data.DataLoader`, yields tuples of (spec, w, z)
         """
-        files = cls.list_batches(dir, which=which, tag=tag)
-        if which in ["train", "valid"]:
-            subset = slice(0, 3)
-        else:
-            subset = None
-        load_fct = partial(load_batch, subset=subset)
-        data = BatchedFilesDataset(
-            files, load_fct, shuffle=shuffle, shuffle_instance=shuffle_instance
-        )
-        return DataLoader(data, batch_size=batch_size)
+        return get_data_loader(path, which=which, batch_size=batch_size, shuffle=shuffle, **kwargs)
 
     @classmethod
-    def list_batches(cls, dir, which=None, tag=None):
-        """List all batch files
+    def save_dataset(cls, dir, path, fields, batch_size=1024, **kwargs):
+        """Download, prepare, and save spectra as a dataset
 
         Parameters
         ----------
         dir: string
             Root directory for data storage
-        which: ['train', 'valid', 'test'] or None
-            Which subset of the spectra to return. If `None`, returns all of them.
-        tag: string
-            Name to specify which batch files to load
-
-        Returns
-        -------
-        list of filepaths
-        """
-        if tag is None:
-            tag = "variable"
-        classname = cls.__mro__[0].__name__
-        filename = f"{classname}{tag}_*.pkl"
-        batch_files = glob.glob(dir + "/" + filename)
-        batches = [item for item in batch_files if not "copy" in item]
-
-        NBATCH = len(batches)
-        train_batches = batches[: int(0.7 * NBATCH)]
-        valid_batches = batches[int(0.7 * NBATCH) : int(0.85 * NBATCH)]
-        test_batches = batches[int(0.85 * NBATCH) :]
-
-        if which == "test":
-            return test_batches
-        elif which == "valid":
-            return valid_batches
-        elif which == "train":
-            return train_batches
-        else:
-            return batches
-
-    @classmethod
-    def save_batch(cls, dir, batch, tag=None, counter=None):
-        """Save batch into a pickled file
-
-        Parameters
-        ----------
-        dir: string
-            Root directory for data storage
-        batch: `torch.tensor`, shape (N, L)
-            Spectrum batch
-        tag: string
-            Name to specify which batch file name
-        counter: int
-            Set to add a batch counter to the filename
-
-        Returns
-        -------
-        None
-
-        """
-        if tag is None:
-            tag = f"chunk{len(batch)}"
-        if counter is None:
-            counter = ""
-        classname = cls.__mro__[0].__name__
-        filename = os.path.join(dir, f"{classname}{tag}_{counter}.pkl")
-
-        with open(filename, "wb") as f:
-            pickle.dump(batch, f)
-
-    @classmethod
-    def save_in_batches(cls, dir, ids, tag=None, batch_size=1024):
-        """Save all spectra for given ids into batch files
-
-        Parameters
-        ----------
-        dir: string
-            Root directory for data storage
-        ids: list of (plate, mjd, fiberid)
-            Identifier of spectrum
-        tag: string
-            Name to specify the batch file name
+        path: string
+            Root directory of the dataset
+        fields: list of (plate, mjd, fiberid, [z, z_err])
+            List of object qualifiers from query()
         batch_size: int
-            Number of spectra in each batch
+            Number of spectra to prepare before writing them
+        kwargs: dict
+            Additional arguments for :func:`spender.data.dataset.write_dataset`
 
         Returns
         -------
-        None
-
+        dict with the number of spectra in each split
         """
-        N = len(ids)
-        idx = np.arange(0, N, batch_size)
-        batches = np.array_split(ids, idx[1:])
-        for counter, ids_ in zip(idx, batches):
-            print(f"saving batch {counter} / {N}")
-            batch = cls.make_batch(dir, ids_)
-            cls.save_batch(dir, batch, tag=tag, counter=counter)
+        def batches():
+            for start in range(0, len(fields), batch_size):
+                fields_ = fields[start : start + batch_size]
+                spec, w, z, norm, zerr = cls.make_batch(dir, fields_)
+                ids = np.array([f[:3] for f in fields_], dtype=int)
+                yield dict(spec=spec, w=w, z=z, zerr=zerr, norm=norm, **dict(zip(cls._id_columns, ids.T)))
+
+        features = get_features(len(cls._wave_obs), cls._id_columns)
+        return write_dataset(path, batches(), features, cls._id_columns, **kwargs)
 
     @classmethod
     def get_spectrum(cls, dir, plate, mjd, fiberid, return_file=False):

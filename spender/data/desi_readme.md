@@ -91,11 +91,15 @@ desi = desi.DESI()
 # get healpix info that corresponds to BGS spectra
 bgs_hpixs = desi.query('.', 'BGS') 
 
-# save the files to batches by
+# save the spectra as a dataset by
 # 1. desi.get_spectra: download the coadd and redrock output files 
 # 2. desi.prepare_spectra: keep only spectra observed with good fibers, specified target class, and 
 #    has good redshifts
-desi.save_in_batches('YOUR_DIR_HERE', bgs_hpixs, batch_size=1024)
+# 3. write them as Parquet files, split into train/validation/test
+desi.save_dataset('YOUR_DIR_HERE', 'YOUR_DATASET_HERE', bgs_hpixs)
+
+# the dataset is then read with
+trainloader = desi.get_data_loader('YOUR_DATASET_HERE', which="train", batch_size=1024, shuffle=True)
 
 ```
 
