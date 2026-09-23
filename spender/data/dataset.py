@@ -119,6 +119,8 @@ def write_dataset(
     writers = {split: _ShardWriter(path, split, schema, shard_size, row_group_size, compression) for split in fractions}
 
     for batch in batches:
+        if not len(batch[id_columns[0]]):
+            continue
         table = _to_table(batch, schema)
         ids = np.stack([np.asarray(batch[c]) for c in id_columns], axis=1)
         splits = assign_split(ids, fractions)

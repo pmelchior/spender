@@ -6,8 +6,11 @@ import numpy as np
 import torch
 
 from spender import NeuralDensityEstimator, load_flow_model, load_model
-from spender.data.sdss import SDSS
+from spender.data.desi import DESI
+from spender.data.sdss import BOSS, SDSS
 from spender.util import LossTracker
+
+INSTRUMENTS = {"SDSS": SDSS, "BOSS": BOSS, "DESI": DESI}
 
 
 def encode(model, loader, device):
@@ -18,7 +21,7 @@ def encode(model, loader, device):
     model: :class:`spender.SpectrumAutoencoder`
         Trained spender model
     loader: :class:`torch.utils.data.DataLoader`
-        Loader of the spectra, see :meth:`spender.data.sdss.SDSS.get_data_loader`
+        Loader of the spectra, see the `get_data_loader` method of the instrument
     device: `torch.Device`
         Device to run the encoder on
 
@@ -108,6 +111,7 @@ if __name__ == "__main__":
     parser.add_argument("dir", help="dataset directory or HuggingFace Hub repository")
     parser.add_argument("model", help="file name of the trained spender model")
     parser.add_argument("outfile", help="output file name of the flow model")
+    parser.add_argument("-i", "--instrument", help="instrument that observed the spectra", choices=list(INSTRUMENTS), default="SDSS")
     parser.add_argument("-b", "--batch_size", help="batch size for the flow", type=int, default=10000)
     parser.add_argument("-B", "--encode_batch_size", help="batch size for the encoder", type=int, default=1024)
     parser.add_argument("-e", "--epochs", help="number of epochs", type=int, default=100)
@@ -119,11 +123,12 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # encode all spectra once: the latents are small enough to stay in memory
-    instrument = SDSS()
+    Instrument = INSTRUMENTS[args.instrument]
+    instrument = Instrument()
     model = load_model(args.model, instrument, map_location=device)
     model.to(device)
     s, s_valid = tuple(
-        encode(model, SDSS.get_data_loader(args.dir, which=which, batch_size=args.encode_batch_size), device)
+        encode(model, Instrument.get_data_loader(args.dir, which=which, batch_size=args.encode_batch_size), device)
         for which in ("train", "valid")
     )
     n_latent = s.shape[1]
