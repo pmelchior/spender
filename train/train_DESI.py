@@ -271,8 +271,8 @@ if __name__ == "__main__":
     FULL = {"data":True,"decoder":True}
     train_sequence = prepare_train([FULL])
 
-    annealing_step = 0.1
-    ANNEAL_SCHEDULE = np.arange(0.0,2.0,annealing_step)
+    annealing_step = 0.25
+    ANNEAL_SCHEDULE = np.arange(0.0,5.0,annealing_step)
 
     if args.verbose and args.similarity:
         print("similarity_slope:",len(ANNEAL_SCHEDULE),ANNEAL_SCHEDULE)

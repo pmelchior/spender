@@ -27,9 +27,10 @@ class LossConfig:
         Weight of the consistency loss relative to the fidelity loss, applied by the
         caller when combining losses for backpropagation
     similarity_wid: float
-        Width of the no-penalty region around equal (dis)similarity in
-        :func:`similarity_loss` and :func:`similarity_restframe_loss`, in units of
-        the mean pairwise dissimilarity across the batch (divided by `similarity_slope`)
+        Offset of the two sigmoids in :func:`similarity_loss` and
+        :func:`similarity_restframe_loss`. Sets the contrast of the loss: a perfectly
+        matched pair costs `2 * sigmoid(-similarity_wid / 2)` (0.15 for the default),
+        a strongly mismatched pair costs 1
     similarity_amp: float
         Weight of the similarity loss relative to the fidelity loss, applied by the
         caller when combining losses for backpropagation
@@ -42,8 +43,11 @@ class LossConfig:
         decoded spectra before comparison
     similarity_slope: float
         Steepness of the sigmoid that compares latent and spectral dissimilarity in
-        :func:`similarity_loss` and :func:`similarity_restframe_loss`. Training scripts typically anneal this
-        value over the course of training by updating this field directly.
+        :func:`similarity_loss` and :func:`similarity_restframe_loss`. Pairs whose
+        dissimilarities differ by more than `similarity_wid / (2 * similarity_slope)`,
+        in units of the mean pairwise dissimilarity across the batch, are penalized
+        (0.5 for the defaults). Training scripts typically anneal this value over the
+        course of training by updating this field directly.
     """
     consistency_amp: float = 1
     similarity_wid: float = 5
@@ -51,7 +55,7 @@ class LossConfig:
     restframe_mu: float = 5000
     restframe_sigma: float = 2000
     restframe_bound: Tuple[float, float] = (4000, 7000)
-    similarity_slope: float = 1.0
+    similarity_slope: float = 5.0
 
 
 def consistency_loss(s, s_aug, individual=False):
