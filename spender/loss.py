@@ -10,9 +10,10 @@ from .util import resample_to_restframe
 class LossConfig:
     """Configuration for the similarity and consistency losses
 
-    Collects the hyperparameters of :func:`consistency_loss`, :func:`similarity_loss`,
-    :func:`restframe_weight`, and :func:`similarity_restframe` in one place, so that
-    training scripts can adjust them without editing the loss functions themselves.
+    Collects the hyperparameters of :func:`similarity_loss`, :func:`restframe_weight`,
+    and :func:`similarity_restframe` in one place, so that training scripts can adjust
+    them without editing the loss functions themselves. :func:`consistency_loss` has no
+    hyperparameters: its tolerance is set by the latent dispersion across the batch.
 
     `consistency_amp` and `similarity_amp` are not applied inside :func:`consistency_loss`
     or :func:`similarity_restframe_loss` themselves: :func:`get_losses` returns the raw,
@@ -24,9 +25,6 @@ class LossConfig:
     consistency_amp: float
         Weight of the consistency loss relative to the fidelity loss, applied by the
         caller when combining losses for backpropagation
-    consistency_tol: float
-        Tolerance of :func:`consistency_loss` for latent drift under augmentation;
-        smaller values penalize drift more strongly
     similarity_wid: float
         Width of the no-penalty region around equal (dis)similarity in
         :func:`similarity_loss`
@@ -52,7 +50,6 @@ class LossConfig:
         value over the course of training by updating this field directly.
     """
     consistency_amp: float = 1
-    consistency_tol: float = 0.5
     similarity_wid: float = 5
     similarity_amp: float = 3
     similarity_data_amp: float = 30
@@ -63,13 +60,17 @@ class LossConfig:
     similarity_slope: float = 1.0
 
 
-def consistency_loss(s, s_aug, individual=False, config: Optional[LossConfig] = None):
+def consistency_loss(s, s_aug, individual=False):
     """Consistency loss between latents of original and augmented spectra
 
     Penalizes latents that change under data augmentation (e.g. added noise or
     redshifting) of the same underlying spectrum. The squared latent distance is
-    passed through a sigmoid and centered so that a value of zero indicates perfect
-    alignment between `s` and `s_aug`.
+    measured in units of the latent variance across the batch, passed through a
+    sigmoid, and centered so that a value of zero indicates perfect alignment
+    between `s` and `s_aug`. Because the variance is not detached, the loss is
+    invariant to an overall rescaling of the latents, so it cannot be reduced by
+    shrinking the latent space. For unrelated `s` and `s_aug`, the distance is ~2
+    and the loss per sample is ~0.35.
 
     Parameters
     ----------
@@ -80,23 +81,21 @@ def consistency_loss(s, s_aug, individual=False, config: Optional[LossConfig] = 
     individual: bool
         Whether the per-sample discrepancy and loss are returned instead of the
         aggregated loss
-    config: :class:`LossConfig`
-        Loss hyperparameters. Uses `LossConfig.consistency_tol` as the alignment
-        tolerance. If `None`, the defaults of :class:`LossConfig` are used.
 
     Returns
     -------
     x: `torch.tensor`, shape (N,)
-        Per-sample squared latent distance, in units of the alignment tolerance
-        (only returned if `individual`)
+        Per-sample squared latent distance, in units of the mean per-dimension
+        latent variance across the batch (only returned if `individual`)
     sim_loss: `torch.tensor`, shape (N,), or float
         Consistency loss; zero indicates perfect alignment between `s` and `s_aug`.
         If `individual` is False, this is summed over the batch into a single float.
     """
-    if config is None:
-        config = LossConfig()
     batch_size, s_size = s.shape
-    x = torch.sum((s_aug - s) ** 2 / config.consistency_tol ** 2, dim=1) / s_size
+    # alignment tolerance: mean per-dimension variance of latents across the batch
+    # not detached, so that the loss is invariant to rescaling the latents
+    tol2 = s.var(dim=0).mean()
+    x = torch.sum((s_aug - s) ** 2, dim=1) / (s_size * tol2)
     sim_loss = torch.sigmoid(x) - 0.5  # zero = perfect alignment
     if individual:
         return x, sim_loss
@@ -323,9 +322,8 @@ def get_losses(model,
     consistency: bool
         Whether to compute the consistency loss (requires `aug_fct`)
     loss_config: :class:`LossConfig`
-        Loss hyperparameters, forwarded to :func:`similarity_restframe_loss` and
-        :func:`consistency_loss`. If `None`, the defaults of :class:`LossConfig`
-        are used.
+        Loss hyperparameters, forwarded to :func:`similarity_restframe_loss`. If
+        `None`, the defaults of :class:`LossConfig` are used.
 
     Returns
     -------
@@ -350,7 +348,7 @@ def get_losses(model,
     if consistency and aug_fct is not None:
         spec_, w_, z_ = aug_fct(batch)
         s_ = model.encode(spec_)
-        cons_loss = consistency_loss(s, s_, config=loss_config)
+        cons_loss = consistency_loss(s, s_)
     else:
         cons_loss = 0
 

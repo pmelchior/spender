@@ -59,8 +59,8 @@ def get_all_parameters(models,instruments):
 # per-instrument hyperparameters of the similarity and consistency losses
 # (currently identical for both instruments, kept separate for future tuning)
 DEFAULT_LOSS_CONFIGS = {
-    "SDSS": LossConfig(consistency_tol=0.1, restframe_mu=5000, restframe_sigma=1000, similarity_data_amp=20),
-    "BOSS": LossConfig(consistency_tol=0.1, restframe_mu=5000, restframe_sigma=1000, similarity_data_amp=20),
+    "SDSS": LossConfig(restframe_mu=5000, restframe_sigma=1000, similarity_data_amp=20),
+    "BOSS": LossConfig(restframe_mu=5000, restframe_sigma=1000, similarity_data_amp=20),
 }
 
 def checkpoint(accelerator, args, optimizer, scheduler, n_encoder, outfile, tracker):
