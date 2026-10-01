@@ -11,9 +11,10 @@ class LossConfig:
     """Configuration for the similarity and consistency losses
 
     Collects the hyperparameters of :func:`similarity_loss`, :func:`restframe_weight`,
-    and :func:`similarity_restframe` in one place, so that training scripts can adjust
-    them without editing the loss functions themselves. :func:`consistency_loss` has no
-    hyperparameters: its tolerance is set by the latent dispersion across the batch.
+    and :func:`similarity_restframe_loss` in one place, so that training scripts can
+    adjust them without editing the loss functions themselves. The relative scales of
+    latents and spectra are not hyperparameters: :func:`consistency_loss` and both
+    similarity losses set them from the dispersion across the batch.
 
     `consistency_amp` and `similarity_amp` are not applied inside :func:`consistency_loss`
     or :func:`similarity_restframe_loss` themselves: :func:`get_losses` returns the raw,
@@ -27,35 +28,28 @@ class LossConfig:
         caller when combining losses for backpropagation
     similarity_wid: float
         Width of the no-penalty region around equal (dis)similarity in
-        :func:`similarity_loss`
+        :func:`similarity_loss` and :func:`similarity_restframe_loss`, in units of
+        the mean pairwise dissimilarity across the batch (divided by `similarity_slope`)
     similarity_amp: float
         Weight of the similarity loss relative to the fidelity loss, applied by the
         caller when combining losses for backpropagation
-    similarity_data_amp: float
-        Weighting of the spectrum dissimilarity relative to the latent dissimilarity
-        inside the similarity loss
     restframe_mu: float
         Center of the :func:`restframe_weight` Gaussian window, in restframe wavelength
     restframe_sigma: float
         Width of the :func:`restframe_weight` Gaussian window
-    restframe_wid: float
-        Width of the no-penalty region around equal (dis)similarity in
-        :func:`similarity_restframe`
     restframe_bound: tuple of float, length 2
-        Restframe wavelength range used by :func:`similarity_restframe` to normalize
+        Restframe wavelength range used by :func:`similarity_restframe_loss` to normalize
         decoded spectra before comparison
     similarity_slope: float
         Steepness of the sigmoid that compares latent and spectral dissimilarity in
-        :func:`similarity_restframe_loss`. Training scripts typically anneal this
+        :func:`similarity_loss` and :func:`similarity_restframe_loss`. Training scripts typically anneal this
         value over the course of training by updating this field directly.
     """
     consistency_amp: float = 1
     similarity_wid: float = 5
     similarity_amp: float = 3
-    similarity_data_amp: float = 30
     restframe_mu: float = 5000
     restframe_sigma: float = 2000
-    restframe_wid: float = 5
     restframe_bound: Tuple[float, float] = (4000, 7000)
     similarity_slope: float = 1.0
 
@@ -102,14 +96,26 @@ def consistency_loss(s, s_aug, individual=False):
     return sim_loss.sum()
 
 
-def similarity_loss(instrument, model, spec, w, z, s, slope=0.5, individual=False, config: Optional[LossConfig] = None):
+def _normalize_dissimilarity(D):
+    """Normalize pairwise dissimilarities by their mean over all distinct pairs
+
+    Not detached, so that the similarity losses are invariant to rescaling either
+    the latents or the spectra. For latents, the mean is 2x the mean per-dimension
+    variance across the batch, i.e. the same scale as in :func:`consistency_loss`.
+    """
+    batch_size = D.shape[0]
+    return D * (batch_size * (batch_size - 1)) / D.sum()
+
+
+def similarity_loss(instrument, model, spec, w, z, s, individual=False, config: Optional[LossConfig] = None):
     """Similarity loss between observed spectra and their latents
 
     Compares the pairwise dissimilarity of observed spectra (resampled to the
     restframe and weighted by their combined inverse variance) to the pairwise
     dissimilarity of the corresponding latents. Pairs whose spectral and latent
     (dis)similarities disagree are penalized, which encourages the latent space to
-    preserve the (dis)similarity structure of the data.
+    preserve the (dis)similarity structure of the data. Both dissimilarities are
+    measured in units of their mean across all distinct pairs in the batch.
 
     Parameters
     ----------
@@ -126,22 +132,22 @@ def similarity_loss(instrument, model, spec, w, z, s, slope=0.5, individual=Fals
         Redshifts for each spectrum, used to resample `spec` into the restframe
     s: `torch.tensor`, shape (N, S)
         Batch of latents that encode `spec`
-    slope: float
-        Steepness of the sigmoid that compares latent and spectral dissimilarity
     individual: bool
         Whether the pairwise dissimilarities are returned instead of the
         aggregated loss
     config: :class:`LossConfig`
-        Loss hyperparameters. Uses `LossConfig.similarity_wid`. If `None`, the
-        defaults of :class:`LossConfig` are used.
+        Loss hyperparameters. Uses `LossConfig.similarity_slope` and
+        `LossConfig.similarity_wid`. If `None`, the defaults of :class:`LossConfig`
+        are used.
 
     Returns
     -------
     s_sim: `torch.tensor`, shape (N, N)
-        Pairwise dissimilarity of latents (only returned if `individual`)
+        Pairwise dissimilarity of latents, in units of its batch mean (only returned
+        if `individual`)
     spec_sim: `torch.tensor`, shape (N, N)
         Pairwise dissimilarity of restframe spectra, weighted by their combined
-        variance (only returned if `individual`)
+        variance, in units of its batch mean (only returned if `individual`)
     sim_loss: `torch.tensor`, shape (N, N), or float
         Similarity loss (not weighted by `LossConfig.similarity_amp`) that penalizes
         latent and spectral (dis)similarities that disagree; the diagonal is masked
@@ -174,8 +180,13 @@ def similarity_loss(instrument, model, spec, w, z, s, slope=0.5, individual=Fals
     # dissimilarity of latents
     s_sim = ((s[None, :, :] - s[:, None, :]) ** 2).sum(-1) / s_size
 
+    # bring both to the same scale
+    s_sim = _normalize_dissimilarity(s_sim)
+    spec_sim = _normalize_dissimilarity(spec_sim)
+
     # only give large loss of (dis)similarities are different (either way)
     x = s_sim - spec_sim
+    slope = config.similarity_slope
     sim_loss = torch.sigmoid(slope * x - 0.5 * config.similarity_wid) + torch.sigmoid(
         -slope * x - 0.5 * config.similarity_wid
     )
@@ -192,7 +203,7 @@ def similarity_loss(instrument, model, spec, w, z, s, slope=0.5, individual=Fals
 def restframe_weight(model, config: Optional[LossConfig] = None):
     """Gaussian weighting function over the restframe wavelength grid
 
-    Used by :func:`similarity_restframe` to emphasize a particular restframe
+    Used by :func:`similarity_restframe_loss` to emphasize a particular restframe
     wavelength region when comparing decoded spectra.
 
     Parameters
@@ -220,7 +231,8 @@ def similarity_restframe_loss(model, s=None, individual=False, config: Optional[
     Like :func:`similarity_loss`, but compares decoded restframe spectra, normalized
     by their median flux in `config.restframe_bound`, instead of observed spectra.
     This avoids the need to resample observations and lets the loss be weighted by
-    :func:`restframe_weight` rather than by observational noise.
+    :func:`restframe_weight` rather than by observational noise. Both dissimilarities
+    are measured in units of their mean across all distinct pairs in the batch.
 
     Parameters
     ----------
@@ -233,17 +245,18 @@ def similarity_restframe_loss(model, s=None, individual=False, config: Optional[
         aggregated loss
     config: :class:`LossConfig`
         Loss hyperparameters. Uses `LossConfig.similarity_slope`,
-        `LossConfig.similarity_data_amp`, `LossConfig.similarity_wid`, and
-        `LossConfig.restframe_bound`, and is forwarded to :func:`restframe_weight`.
+        `LossConfig.similarity_wid`, and `LossConfig.restframe_bound`, and is
+        forwarded to :func:`restframe_weight`.
         If `None`, the defaults of :class:`LossConfig` are used.
 
     Returns
     -------
     s_sim: `torch.tensor`, shape (N, N)
-        Pairwise dissimilarity of latents (only returned if `individual`)
+        Pairwise dissimilarity of latents, in units of its batch mean (only returned
+        if `individual`)
     spec_sim: `torch.tensor`, shape (N, N)
         Pairwise dissimilarity of decoded restframe spectra, weighted by
-        `restframe_weight` (only returned if `individual`)
+        `restframe_weight`, in units of its batch mean (only returned if `individual`)
     sim_loss: `torch.tensor`, shape (N, N), or float
         Similarity loss (not weighted by `LossConfig.similarity_amp`) that penalizes
         latent and spectral (dis)similarities that disagree; the diagonal is masked
@@ -259,7 +272,7 @@ def similarity_restframe_loss(model, s=None, individual=False, config: Optional[
     wave = model.decoder.wave_rest
     bound = config.restframe_bound
     mask = (wave > bound[0]) * (wave < bound[1])
-    spec /= spec[:, mask].median(dim=1)[0][:, None]
+    spec = spec / spec[:, mask].median(dim=1)[0][:, None]
     batch_size, spec_size = spec.shape
     # pairwise dissimilarity of spectra
     S = (spec[None, :, :] - spec[:, None, :]) ** 2
@@ -270,8 +283,12 @@ def similarity_restframe_loss(model, s=None, individual=False, config: Optional[
     # dissimilarity of latents
     s_sim = ((s[None, :, :] - s[:, None, :]) ** 2).sum(-1) / s_size
 
+    # bring both to the same scale
+    s_sim = _normalize_dissimilarity(s_sim)
+    spec_sim = _normalize_dissimilarity(spec_sim)
+
     # only give large loss of (dis)similarities are different (either way)
-    x = s_sim - config.similarity_data_amp * spec_sim
+    x = s_sim - spec_sim
     slope = config.similarity_slope
     sim_loss = torch.sigmoid(slope * x - 0.5 * config.similarity_wid) + torch.sigmoid(
         -slope * x - 0.5 * config.similarity_wid
