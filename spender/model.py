@@ -21,11 +21,9 @@ class MLP(nn.Sequential):
     act: list of callables
         Activation functions after every layer. Needs to have len(n_hidden) + 1
         If `None`, will be set to `LeakyReLU` for every layer.
-    dropout: float
-        Dropout probability
     """
 
-    def __init__(self, n_in, n_out, n_hidden=(16, 16, 16), act=None, dropout=0):
+    def __init__(self, n_in, n_out, n_hidden=(16, 16, 16), act=None):
 
         if act is None:
             act = [
@@ -38,7 +36,7 @@ class MLP(nn.Sequential):
         for i in range(len(n_) - 1):
             layer.append(nn.Linear(n_[i], n_[i + 1]))
             layer.append(act[i])
-            layer.append(nn.Dropout(p=dropout))
+            layer.append(nn.Identity()) # dummy replacement for earlier Dropout, for loading of legacy model files
 
         super(MLP, self).__init__(*layer)
 
@@ -104,13 +102,9 @@ class SpectrumEncoder(nn.Module):
     act: list of callables
         Activation functions after every layer. Needs to have len(n_hidden) + 1
         If `None`, will be set to `LeakyReLU` for every layer.
-    dropout: float
-        Dropout probability
     """
 
-    def __init__(
-        self, instrument, n_latent, n_hidden=(128, 64, 32), act=None, dropout=0
-    ):
+    def __init__(self, instrument, n_latent, n_hidden=(128, 64, 32), act=None):
 
         super(SpectrumEncoder, self).__init__()
         self.instrument = instrument
@@ -118,9 +112,7 @@ class SpectrumEncoder(nn.Module):
 
         filters = [128, 256, 512]
         sizes = [5, 11, 21]
-        self.conv1, self.conv2, self.conv3 = self._conv_blocks(
-            filters, sizes, dropout=dropout
-        )
+        self.conv1, self.conv2, self.conv3 = self._conv_blocks(filters, sizes)
         self.n_feature = filters[-1] // 2
 
         # pools and softmax work for spectra and weights
@@ -134,11 +126,9 @@ class SpectrumEncoder(nn.Module):
             act = [nn.PReLU(n) for n in n_hidden]
             # last activation identity to have latents centered around 0
             act.append(nn.Identity())
-        self.mlp = MLP(
-            self.n_feature, self.n_latent, n_hidden=n_hidden, act=act, dropout=dropout
-        )
+        self.mlp = MLP(self.n_feature, self.n_latent, n_hidden=n_hidden, act=act)
 
-    def _conv_blocks(self, filters, sizes, dropout=0):
+    def _conv_blocks(self, filters, sizes):
         convs = []
         for i in range(len(filters)):
             f_in = 1 if i == 0 else filters[i - 1]
@@ -153,8 +143,7 @@ class SpectrumEncoder(nn.Module):
             )
             norm = nn.InstanceNorm1d(f)
             act = nn.PReLU(f)
-            drop = nn.Dropout(p=dropout)
-            convs.append(nn.Sequential(conv, norm, act, drop))
+            convs.append(nn.Sequential(conv, norm, act))
         return tuple(convs)
 
     def _downsample(self, x):
@@ -241,8 +230,6 @@ class SpectrumDecoder(nn.Module):
     act: list of callables
         Activation functions after every layer. Needs to have len(n_hidden) + 1
         If `None`, will be set to :class:`SpeculatorActivation` for every layer.
-    dropout: float
-        Dropout probability
     """
 
     def __init__(
@@ -251,7 +238,6 @@ class SpectrumDecoder(nn.Module):
         n_latent=5,
         n_hidden=(64, 256, 1024),
         act=None,
-        dropout=0,
     ):
 
         super(SpectrumDecoder, self).__init__()
@@ -265,7 +251,6 @@ class SpectrumDecoder(nn.Module):
             len(wave_rest),
             n_hidden=n_hidden,
             act=act,
-            dropout=dropout,
         )
 
         self.n_latent = n_latent
