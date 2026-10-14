@@ -33,7 +33,7 @@ dependencies = [
     "GPUtil",
     "nflows",
     "huggingface_hub",
-    "datasets",
+    "datasets>=4.0",
     "pyarrow",
     "fsspec",
 ]
