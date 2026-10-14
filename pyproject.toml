@@ -1,10 +1,11 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=64", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "spender"
-version = "0.2.9"
+dynamic = ["version"]
+requires-python = ">=3.10"
 description = "Spectrum encoder and decoder"
 readme = { file = "README.md", content-type = "text/markdown" }
 license = { text = "MIT" }
@@ -45,3 +46,6 @@ packages = ["spender", "spender.data"]
 
 [tool.setuptools.package-data]
 "spender.data" = ["*.txt"]
+
+[tool.setuptools_scm]
+version_file = "spender/_version.py"
