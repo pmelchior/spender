@@ -6,6 +6,11 @@ from .instrument import LSF, Instrument
 from .model import (MLP, SpectrumAutoencoder, SpectrumDecoder, SpectrumEncoder,
                     SpeculatorActivation)
 
+try:
+    from ._version import __version__
+except ImportError:
+    __version__ = "0.0.0+unknown"
+
 
 def load_model(filename, instrument, **kwargs):
     """Load models from file
