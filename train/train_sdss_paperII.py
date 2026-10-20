@@ -313,7 +313,6 @@ if __name__ == "__main__":
                                    wave_rest,
                                    n_latent=args.latents,
                                    n_hidden=n_hidden,
-                                   n_aux=0
                                    )
               for instrument in instruments ]
     # use same decoder

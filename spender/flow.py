@@ -118,4 +118,6 @@ def build_maf(
         transform = transforms.CompositeTransform([transform_init, transform])
 
     distribution = distributions_.StandardNormal((dim,))
+    # nflows stores the normalization as float64, which some devices (e.g. MPS) don't support
+    distribution._log_z = distribution._log_z.float()
     return transform, distribution, embedding_net

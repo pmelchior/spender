@@ -21,8 +21,8 @@ def load_model(filename, instrument, **kwargs):
         Path to file which contains the torch state dictionary
     instrument: :class:`spender.Instrument`
         Instrument to generate spectrum for
-    device: `torch.Device`
-        Device to load model structure into
+    map_location: `torch.device` or str
+        Device to move the model to after loading
 
     Returns
     -------
@@ -33,12 +33,7 @@ def load_model(filename, instrument, **kwargs):
     """
     assert isinstance(instrument, Instrument)
 
-    # load model_struct from hub if url is given
-    if filename[:4].lower() == "http":
-        kwargs.pop("check_hash", True) # remove check_hash
-        model_struct = torch.hub.load_state_dict_from_url(filename, check_hash=True, **kwargs)
-    else:
-        model_struct = torch.load(filename, **kwargs)
+    model_struct, device = _load_struct(filename, **kwargs)
 
     # check if model_struct['model'] is a single model or list
     try:
@@ -57,7 +52,7 @@ def load_model(filename, instrument, **kwargs):
 
     wave_rest = model_struct["model"]["decoder.wave_rest"]
     n_latent = model_struct["model"]["decoder.mlp.0.weight"].shape[1]
-    
+
     # activation function for decoder MLP: by default Speculator, but older models use LeakyReLU
     act = None if "decoder.mlp.1.beta" in model_struct["model"].keys() else [torch.nn.LeakyReLU(), ] * 4
 
@@ -90,6 +85,8 @@ def load_model(filename, instrument, **kwargs):
         ] = instrument._skyline_mask
         model.load_state_dict(model_struct["model"], strict=False)
 
+    if device is not None:
+        model = model.to(device)
     return model
 
 def load_flow_model(filename, n_latent, **kwargs):
@@ -98,11 +95,22 @@ def load_flow_model(filename, n_latent, **kwargs):
         initial_pos={"bounds": [[0, 0]] * n_latent, "std": [0.05] * n_latent},
     )
 
+    model_struct, device = _load_struct(filename, **kwargs)
+    nde.load_state_dict(model_struct)
+    if device is not None:
+        nde = nde.to(device)
+    return nde
+
+def _load_struct(filename, **kwargs):
+    # always load to CPU: the files can contain float64 tensors (e.g. losses),
+    # which some devices (e.g. MPS) don't support; only the model is moved later
+    device = kwargs.pop("map_location", None)
+    kwargs["map_location"] = "cpu"
+
     # load model_struct from hub if url is given
     if filename[:4].lower() == "http":
-        kwargs.pop("check_hash", True)  # remove check_hash
+        kwargs.pop("check_hash", True) # remove check_hash
         model_struct = torch.hub.load_state_dict_from_url(filename, check_hash=True, **kwargs)
     else:
         model_struct = torch.load(filename, **kwargs)
-    nde.load_state_dict(model_struct)
-    return nde
+    return model_struct, device
